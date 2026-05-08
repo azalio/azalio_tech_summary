@@ -58,40 +58,58 @@ Cluster centroids are **frozen** to the first item's embedding — averaging acr
 
 ## Setup
 
-### Local
+### Prerequisites
+
+- **Python 3.10+** with `python3-venv`
+- **An LLM CLI** — at least one of:
+  - [Gemini CLI](https://github.com/google-gemini/gemini-cli) — needs Node.js ≥ 20.
+    Install: `npm install -g @google/gemini-cli`. Authenticate once interactively (`gemini` → Google login). Auth lives in `~/.gemini/oauth_creds.json`.
+  - [Codex CLI](https://github.com/openai/codex) — `brew install --cask codex`. Authenticate via `codex login`. Auth lives in `~/.codex/auth.json`.
+  - Either both, or just one; if both present, Gemini is tried first.
+- **A Telegram bot** — create one via [@BotFather](https://t.me/BotFather), copy the token, and either invite the bot to your channel as admin or send it `/start` from your account.
+
+### Install
 
 ```bash
 git clone https://github.com/azalio/azalio_tech_summary.git
 cd azalio_tech_summary
-pip install -r requirements.txt
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
 cp env.example .env
-# Edit .env — at minimum set TELEGRAM_BOT_TOKEN and TELEGRAM_DEFAULT_CHAT_ID
+# Edit .env — at minimum set TELEGRAM_BOT_TOKEN, TELEGRAM_DEFAULT_CHAT_ID,
+# and TELEGRAM_DIGEST_CHAT (defaults to @azalio_tech_summary which you don't own).
 ```
 
-Required env vars:
+> A virtualenv is strongly recommended on Ubuntu 24.04+ — system pip is locked down by [PEP 668](https://peps.python.org/pep-0668/). Without a venv you'd need `--break-system-packages`.
+
+### Required env vars
 
 | Var | Purpose |
 |---|---|
 | `TELEGRAM_BOT_TOKEN` | Bot token from [@BotFather](https://t.me/BotFather) |
 | `TELEGRAM_DEFAULT_CHAT_ID` | Fallback chat (your user id from [@userinfobot](https://t.me/userinfobot)) |
-| `TELEGRAM_DIGEST_CHAT` | Channel for the hourly digest (default `@azalio_tech_summary`) |
+| `TELEGRAM_DIGEST_CHAT` | Channel for the hourly digest. **Override the default** — `@azalio_tech_summary` belongs to the author. |
 
 Optional (collectors silently skip when unset): `FINNHUB_API_KEY`, `NEWSAPI_KEY`, `GEMINI_BIN`, `CODEX_BIN`, `RU_NEWS_SCRIPT`, `MARKET_NEWS_SCRIPT`. See `env.example` for the full list.
 
-The bot needs at least one of `gemini` or `codex` CLI installed and reachable on `PATH` (or pinned via `GEMINI_BIN` / `CODEX_BIN`).
+If the LLM CLIs are not on your `$PATH` (e.g. cron has a minimal PATH), pin them explicitly: `GEMINI_BIN=/home/you/.npm-global/bin/gemini`.
 
 ### Run once
 
 ```bash
-python3 main.py            # collects, dedupes, calls LLM, posts to Telegram
-python3 main.py --dry-run  # everything except LLM + Telegram (prints prompt instead)
+.venv/bin/python main.py            # collects, dedupes, calls LLM, posts to Telegram
+.venv/bin/python main.py --dry-run  # everything except LLM + Telegram (prints prompt instead)
 ```
+
+The first run downloads the multilingual E5 model (~470 MB) into the HuggingFace cache. Subsequent runs are fast.
 
 ### Cron (hourly)
 
 ```cron
-15 * * * * cd /path/to/azalio_tech_summary && /usr/bin/python3 main.py >> /var/log/azalio_tech_summary.log 2>&1
+15 * * * * cd /home/you/azalio_tech_summary && .venv/bin/python main.py >> /var/log/azalio_tech_summary.log 2>&1
 ```
+
+Cron has a minimal `$PATH`, so the LLM CLI may not be found by name. Pin it via `GEMINI_BIN` (or `CODEX_BIN`) inside `.env`, or prepend the directory to the cron line's `PATH`.
 
 ### Deploy to a remote server
 
