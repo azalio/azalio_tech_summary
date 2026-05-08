@@ -39,7 +39,25 @@ class Collectors:
         self.finnhub_key = os.environ.get("FINNHUB_API_KEY", "")
         self.newsapi_key = os.environ.get("NEWSAPI_KEY", "")
 
+        self._init_db()
         self._cleanup_seen()
+
+    def _init_db(self):
+        """Ensure sent_posts table exists (URL dedup layer)."""
+        try:
+            os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
+            conn = sqlite3.connect(self.db_path)
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS sent_posts (
+                    url TEXT PRIMARY KEY,
+                    subreddit TEXT,
+                    sent_at TIMESTAMP
+                )
+            ''')
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            print(f"  _init_db error: {e}")
 
     _RECAP_RE = re.compile(
         r'\bweek in review\b|\bweekly (?:roundup|recap|digest|summary|news)\b|\bthis week in\b|\bin review:',

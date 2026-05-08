@@ -126,9 +126,10 @@ def save_summary(text):
         f.write(text)
 
 def main():
+    dry_run = "--dry-run" in sys.argv
     workspace = WORKSPACE
     os.makedirs(os.path.join(workspace, "memory"), exist_ok=True)
-    core = VibeCore()
+    core = None if dry_run else VibeCore()
 
     # Initialize event-clustering dedup
     dedup = EventDedup(
@@ -195,6 +196,15 @@ def main():
             last_summary=last_summary,
             all_intelligence_data=all_intelligence_data,
         )
+        if dry_run:
+            print("=" * 60)
+            print("DRY RUN — full prompt that would go to LLM:")
+            print("=" * 60)
+            print(prompt)
+            print("=" * 60)
+            print(f"[DRY RUN] {len(prompt)} chars in prompt. Skipping LLM call and Telegram post.")
+            return
+        assert core is not None
         summary = core.ask_llm(prompt)
         result = summary if summary else all_intelligence_data
         core.send_tg(result, title="WORLD INTEL BRIEF", chat_id=DIGEST_CHAT)

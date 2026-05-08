@@ -83,7 +83,8 @@ The bot needs at least one of `gemini` or `codex` CLI installed and reachable on
 ### Run once
 
 ```bash
-python3 main.py
+python3 main.py            # collects, dedupes, calls LLM, posts to Telegram
+python3 main.py --dry-run  # everything except LLM + Telegram (prints prompt instead)
 ```
 
 ### Cron (hourly)
