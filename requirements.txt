@@ -1,0 +1,6 @@
+requests>=2.31
+feedparser>=6.0
+python-dotenv>=1.0
+beautifulsoup4>=4.12
+numpy>=1.24
+sentence-transformers>=2.7

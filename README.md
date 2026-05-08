@@ -1,0 +1,116 @@
+# azalio_tech_summary
+
+Hourly tech-news digest bot. Pulls headlines from ~15 sources, deduplicates them with embeddings, asks an LLM to write a structured Russian-language digest, and posts to a Telegram channel.
+
+Channel: [@azalio_tech_summary](https://t.me/azalio_tech_summary).
+
+## What it does
+
+Every hour the bot:
+
+1. **Collects** ~150-300 headlines in parallel from RSS, REST APIs, and HTML pages.
+2. **Deduplicates** them in two layers — exact URL match (SQLite, 30-day TTL) and semantic clustering on multilingual sentence embeddings (`intfloat/multilingual-e5-small`).
+3. **Summarises** what's left with an LLM (Gemini CLI, with Codex CLI as fallback) under a strict editorial prompt: DevOps/SRE → AI/ML → Security → Science → Politics, no preamble, no editorial commentary.
+4. **Posts** the digest to a Telegram channel, splitting by section if it overflows the 4096-char limit.
+
+Output goes to ~30 buckets per day, ~5-15 bullets per digest after dedup.
+
+## Sources
+
+- **Reddit** — ~30 tech subreddits via Reddit API (programming, kubernetes, MachineLearning, ClaudeAI, ...).
+- **HackerNews** — front page via Algolia.
+- **Tech press (RSS)** — TechCrunch, Ars Technica, The Verge, Wired, MIT Tech Review, IEEE Spectrum, The Register.
+- **AI research** — HuggingFace Daily Papers (upvotes ≥ 100), ArXiv RSS (cs.AI, cs.LG, cs.CL).
+- **Infra/DevOps** — Kubernetes, CNCF, AWS, Cloudflare, CISA Alerts.
+- **Science/Space** — NASA, Nature, ScienceDaily, SpaceNews, ESO, ESA, Chandra X-ray, Phys.org.
+- **Global news** — BBC, Al Jazeera, DW.
+- **Google News** — search-based RSS.
+- **NewsAPI** — AI / DevOps / Cybersecurity categories (optional, needs API key).
+- **Finnhub** — general financial news (optional, needs API key).
+- **Habr** — top daily articles (score ≥ 100).
+- **Claude Platform release notes** — direct `.md` fetch from `platform.claude.com`.
+- **GitHub Trending** — top 5 daily by stars-today (≥ 200), with first ~400 chars of README via `raw.githubusercontent.com`.
+
+## Architecture
+
+```
+collectors.py ──► dedup.py ──► main.py (LLM call) ──► core.py (Telegram)
+   RSS/API           E5 model      VIBE_PROMPT          HTML format
+   ~15 sources       SQLite        gemini/codex CLI     auto-split
+```
+
+State lives in `${VIBE_WORKSPACE}/memory/`:
+- `events.db` — semantic dedup clusters (centroid + tokens)
+- `reddit_sent.db` (a.k.a. `sent_posts`) — URL dedup
+- `last_intel_summary.txt` — previous digest, fed back into the next prompt
+
+## Deduplication
+
+Two layers, both must pass:
+
+1. **URL** — normalised (https, lowercase host, sorted params, no UTM) match in `sent_posts`. 30-day TTL.
+2. **Semantic** — E5 embedding of the title compared to existing event clusters. Tiered gate:
+   - cosine ≥ **0.90** → duplicate (no further check)
+   - cosine ≥ 0.80 AND Jaccard token overlap ≥ 0.15 → duplicate
+   - else → new event, becomes a fresh cluster
+
+Cluster centroids are **frozen** to the first item's embedding — averaging across additions causes drift over time. Matching window is 48h, storage TTL 7 days.
+
+## Setup
+
+### Local
+
+```bash
+git clone https://github.com/azalio/azalio_tech_summary.git
+cd azalio_tech_summary
+pip install -r requirements.txt
+cp env.example .env
+# Edit .env — at minimum set TELEGRAM_BOT_TOKEN and TELEGRAM_DEFAULT_CHAT_ID
+```
+
+Required env vars:
+
+| Var | Purpose |
+|---|---|
+| `TELEGRAM_BOT_TOKEN` | Bot token from [@BotFather](https://t.me/BotFather) |
+| `TELEGRAM_DEFAULT_CHAT_ID` | Fallback chat (your user id from [@userinfobot](https://t.me/userinfobot)) |
+| `TELEGRAM_DIGEST_CHAT` | Channel for the hourly digest (default `@azalio_tech_summary`) |
+
+Optional (collectors silently skip when unset): `FINNHUB_API_KEY`, `NEWSAPI_KEY`, `GEMINI_BIN`, `CODEX_BIN`, `RU_NEWS_SCRIPT`, `MARKET_NEWS_SCRIPT`. See `env.example` for the full list.
+
+The bot needs at least one of `gemini` or `codex` CLI installed and reachable on `PATH` (or pinned via `GEMINI_BIN` / `CODEX_BIN`).
+
+### Run once
+
+```bash
+python3 main.py
+```
+
+### Cron (hourly)
+
+```cron
+15 * * * * cd /path/to/azalio_tech_summary && /usr/bin/python3 main.py >> /var/log/azalio_tech_summary.log 2>&1
+```
+
+### Deploy to a remote server
+
+```bash
+SSH_TARGET=user@host REMOTE_DIR=/srv/bot make deploy
+# .env must already exist on the server
+```
+
+## Tests
+
+```bash
+python3 -m pytest test_dedup.py -v
+```
+
+43 tests. The first run downloads the E5 model (~470 MB) into HuggingFace cache.
+
+## Why subprocess-based LLM, not the SDK?
+
+Because Gemini and Codex CLIs handle authentication, model selection, and rate-limiting on their own — calling them via `subprocess` is one less moving part than juggling SDKs across providers. The trade-off is that the bot can't stream tokens or get structured output; for a once-an-hour batch job that's fine.
+
+## Status
+
+Personal project. Runs on one box, posts to one channel. No tests for the LLM step (it's an external CLI), no metrics, no multi-tenant config. PRs and issues welcome but I might not get to them quickly.

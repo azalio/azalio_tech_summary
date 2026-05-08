@@ -1,0 +1,36 @@
+# Secrets
+.env
+.env.local
+.env.*.local
+
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Runtime state
+*.db
+*.sqlite
+*.sqlite3
+events.db
+sent_posts.db
+reddit_sent.db
+*.log
+last_intel_summary.txt
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~
+
+# Build / venv
+.venv/
+venv/
+build/
+dist/
+*.egg-info/
