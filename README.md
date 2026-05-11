@@ -118,6 +118,27 @@ SSH_TARGET=user@host REMOTE_DIR=/srv/bot make deploy
 # .env must already exist on the server
 ```
 
+`make deploy` only scp's source files (`*.py`, `requirements.txt`). It never touches `.env` or `workspace/` on the target — they survive every redeploy.
+
+## Backup and restore
+
+The bot keeps two things outside git: `.env` (secrets + per-deployment config like `REDDIT_MEDIA_SUBS`) and `workspace/memory/` (SQLite dedup state, ~200 MB after a few weeks). Neither is in the repo, so a fresh `git clone` or VM rebuild loses them entirely.
+
+**Snapshot the running deployment** (run from your local machine):
+
+```bash
+SSH_TARGET=user@host REMOTE_DIR=/srv/bot make backup
+# → backups/YYYY-MM-DD.tgz
+```
+
+**Restore onto a fresh VM:**
+
+```bash
+SSH_TARGET=user@host REMOTE_DIR=/srv/bot BACKUP=backups/2026-05-11.tgz make restore
+```
+
+The archive contains `.env` and `workspace/`; everything else is rebuilt from the repo + `pip install`. Restoring before the first `main.py` run is fine — the bot will pick up the existing dedup clusters and skip whatever's already been published.
+
 ## Tests
 
 ```bash
