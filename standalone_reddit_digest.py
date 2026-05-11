@@ -302,7 +302,8 @@ def process_text_subs(reddit, conn):
         except Exception as e:
             print(f"Error r/{sub_name}: {e}")
     
-    RAW_JSON_PATH = os.path.expanduser("~/.openclaw/workspace/memory/reddit_ai_raw.json")
+    RAW_JSON_PATH = os.path.join(WORKSPACE, "memory", "reddit_ai_raw.json")
+    os.makedirs(os.path.dirname(RAW_JSON_PATH), exist_ok=True)
     with open(RAW_JSON_PATH, "w") as f:
         json.dump(raw_data, f, ensure_ascii=False, indent=2)
 
