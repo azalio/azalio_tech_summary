@@ -44,7 +44,6 @@ load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
 POSTS_PER_CHANNEL = 10
 TEXT_TRUNCATE = 1200
 MAX_AGE_DAYS = 7
-FLOOD_WAIT_THRESHOLD = 60  # secs: above this we bail on the channel without sleeping
 
 WORKSPACE = Path(os.path.expanduser(os.environ.get("VIBE_WORKSPACE", "./workspace")))
 SESSION_FILE = Path(
@@ -319,17 +318,12 @@ async def cmd_fetch(cfg: dict) -> None:
                     )
                     fetched += 1
             except FloodWaitError as e:
-                # Telegram's flood-wait is a hard minimum; sleeping less just
-                # triggers another FloodWait on the next request, potentially
-                # cascading to other channels. Sleep the full duration for
-                # short waits; for long waits, skip without sleeping so the
-                # cron run finishes on time and lets other collectors proceed.
-                if e.seconds <= FLOOD_WAIT_THRESHOLD:
-                    print(f"  ⏳ FloodWait on @{ch_norm}: sleeping {e.seconds}s")
-                    await asyncio.sleep(e.seconds)
-                else:
-                    print(f"  ⏳ FloodWait on @{ch_norm}: {e.seconds}s "
-                          f"exceeds {FLOOD_WAIT_THRESHOLD}s threshold, skipping")
+                # Sleeping wouldn't help — by the time the wait expires the
+                # iter_messages call is already aborted and we'd just be
+                # blocking other collectors. The hourly cron retries the
+                # channel on the next run, which is the right cadence anyway.
+                print(f"  ⏳ FloodWait on @{ch_norm}: needs {e.seconds}s, "
+                      f"skipping (next cron run will retry)")
                 continue
             except Exception as e:
                 print(f"  ❌ error fetching @{ch_norm}: {e}")
