@@ -24,7 +24,7 @@ import json
 import os
 import re
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -42,6 +42,7 @@ load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
 
 POSTS_PER_CHANNEL = 10
 TEXT_TRUNCATE = 1200
+MAX_AGE_DAYS = 7
 
 WORKSPACE = Path(os.path.expanduser(os.environ.get("VIBE_WORKSPACE", "./workspace")))
 SESSION_FILE = Path(
@@ -234,6 +235,8 @@ async def cmd_fetch(cfg: dict) -> None:
             json.dump([], f)
         return
 
+    cutoff = datetime.now(timezone.utc) - timedelta(days=MAX_AGE_DAYS)
+
     async with TelegramClient(str(SESSION_FILE), cfg["api_id"], cfg["api_hash"]) as client:
         if not await client.is_user_authorized():
             sys.exit("❌ No Telegram session. Run `auth-start` + `auth-complete`.")
@@ -251,6 +254,9 @@ async def cmd_fetch(cfg: dict) -> None:
             fetched = 0
             try:
                 async for msg in client.iter_messages(entity, limit=POSTS_PER_CHANNEL):
+                    # iter_messages is newest-first; older than cutoff → stop
+                    if msg.date and msg.date < cutoff:
+                        break
                     text = (msg.message or "").strip()
                     if not text:
                         continue  # skip media-only / service messages
