@@ -144,14 +144,19 @@ class Collectors:
         # Explicit utf-8 — fetcher scripts write with ensure_ascii=False, so on
         # locales whose default encoding isn't utf-8 a bare open() would raise
         # UnicodeDecodeError on Cyrillic/emoji posts and silently drop them.
+        # OSError covers permission / I/O / broken symlink so the hourly cron
+        # keeps running on other sources instead of crashing the whole digest.
         try:
             with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
-        except (json.JSONDecodeError, UnicodeDecodeError) as e:
-            print(f"  _read_and_clear: failed to parse {path}: {e}")
+        except (json.JSONDecodeError, UnicodeDecodeError, OSError) as e:
+            print(f"  _read_and_clear: failed to read {path}: {e}")
             data = []
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump([], f)
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump([], f)
+        except OSError as e:
+            print(f"  _read_and_clear: failed to truncate {path}: {e}")
         return data
 
     def _fetch_rss(self, feeds, source_label, max_per_feed=5, max_total=20, max_age_days=7):

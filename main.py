@@ -117,13 +117,19 @@ def load_last_summary():
     try:
         with open(LAST_SUMMARY_PATH, "r", encoding="utf-8") as f:
             return f.read().strip()
-    except FileNotFoundError:
+    except OSError:
+        # Missing file is the common case; permission / I/O errors degrade
+        # gracefully — the digest just runs without "previous report" context.
         return ""
 
 def save_summary(text):
     os.makedirs(os.path.dirname(LAST_SUMMARY_PATH), exist_ok=True)
-    with open(LAST_SUMMARY_PATH, "w", encoding="utf-8") as f:
-        f.write(text)
+    try:
+        with open(LAST_SUMMARY_PATH, "w", encoding="utf-8") as f:
+            f.write(text)
+    except OSError as e:
+        # Telegram post already went out — don't crash on a memory write failure.
+        print(f"save_summary: failed to write {LAST_SUMMARY_PATH}: {e}")
 
 def main():
     dry_run = "--dry-run" in sys.argv

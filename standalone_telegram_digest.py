@@ -189,8 +189,14 @@ async def cmd_auth_start(cfg: dict) -> None:
 async def cmd_auth_complete(cfg: dict, code: str, password: str | None) -> None:
     if not AUTH_PENDING_FILE.exists():
         sys.exit("❌ No pending auth — run `auth-start` first.")
-    with AUTH_PENDING_FILE.open(encoding="utf-8") as f:
-        pending = json.load(f)
+    try:
+        with AUTH_PENDING_FILE.open(encoding="utf-8") as f:
+            pending = json.load(f)
+    except (json.JSONDecodeError, OSError) as e:
+        sys.exit(
+            f"❌ Pending-auth file unreadable ({e}).\n"
+            f"   Delete {AUTH_PENDING_FILE} and rerun `auth-start`."
+        )
     print("🔐 Telegram auth (step 2): confirming code")
     client = TelegramClient(str(SESSION_FILE), cfg["api_id"], cfg["api_hash"])
     await client.connect()
