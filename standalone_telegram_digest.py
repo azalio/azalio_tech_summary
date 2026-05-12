@@ -98,13 +98,19 @@ def total_reactions(reactions) -> int:
 
 
 def normalize_channel(name: str) -> str:
-    """Strip '@' / 't.me/' prefix and any trailing /msg_id; lowercase optional."""
+    """Strip '@' / 't.me/' prefix and any trailing /msg_id, lowercase.
+
+    Telegram usernames are case-insensitive (`@KubeArchitect` resolves the same
+    entity as `@kubearchitect`), so lowercasing produces a canonical form that
+    keeps stored t.me URLs consistent across runs even if the configured
+    `TELEGRAM_CHANNELS` value changes case.
+    """
     name = name.strip()
     if name.startswith(("https://t.me/", "http://t.me/")):
         name = name.split("t.me/", 1)[1]
     if name.startswith("@"):
         name = name[1:]
-    return name.split("/", 1)[0]
+    return name.split("/", 1)[0].lower()
 
 
 def first_line_title(text: str, max_len: int = 80) -> str:

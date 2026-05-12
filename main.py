@@ -115,14 +115,14 @@ DEDUP_DB_DIR = os.path.join(WORKSPACE, "memory", "semantic_dedup")
 
 def load_last_summary():
     try:
-        with open(LAST_SUMMARY_PATH, "r") as f:
+        with open(LAST_SUMMARY_PATH, "r", encoding="utf-8") as f:
             return f.read().strip()
     except FileNotFoundError:
         return ""
 
 def save_summary(text):
     os.makedirs(os.path.dirname(LAST_SUMMARY_PATH), exist_ok=True)
-    with open(LAST_SUMMARY_PATH, "w") as f:
+    with open(LAST_SUMMARY_PATH, "w", encoding="utf-8") as f:
         f.write(text)
 
 def main():

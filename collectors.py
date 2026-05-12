@@ -141,10 +141,16 @@ class Collectors:
 
     def _read_and_clear(self, path):
         if not os.path.exists(path): return []
-        with open(path, "r") as f:
-            try: data = json.load(f)
-            except: data = []
-        with open(path, "w") as f:
+        # Explicit utf-8 — fetcher scripts write with ensure_ascii=False, so on
+        # locales whose default encoding isn't utf-8 a bare open() would raise
+        # UnicodeDecodeError on Cyrillic/emoji posts and silently drop them.
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except (json.JSONDecodeError, UnicodeDecodeError) as e:
+            print(f"  _read_and_clear: failed to parse {path}: {e}")
+            data = []
+        with open(path, "w", encoding="utf-8") as f:
             json.dump([], f)
         return data
 
