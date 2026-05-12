@@ -44,6 +44,7 @@ load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
 POSTS_PER_CHANNEL = 10
 TEXT_TRUNCATE = 1200
 MAX_AGE_DAYS = 7
+FLOOD_WAIT_THRESHOLD = 60  # secs: above this we bail on the channel without sleeping
 
 WORKSPACE = Path(os.path.expanduser(os.environ.get("VIBE_WORKSPACE", "./workspace")))
 SESSION_FILE = Path(
@@ -197,6 +198,14 @@ async def cmd_auth_complete(cfg: dict, code: str, password: str | None) -> None:
             f"❌ Pending-auth file unreadable ({e}).\n"
             f"   Delete {AUTH_PENDING_FILE} and rerun `auth-start`."
         )
+    # Partial writes or manual edits may leave the JSON valid but incomplete —
+    # validate explicitly so a KeyError doesn't surface as a raw traceback.
+    missing_keys = [k for k in ("phone", "phone_code_hash") if not pending.get(k)]
+    if missing_keys:
+        sys.exit(
+            f"❌ Pending-auth file missing required keys: {missing_keys}.\n"
+            f"   Delete {AUTH_PENDING_FILE} and rerun `auth-start`."
+        )
     print("🔐 Telegram auth (step 2): confirming code")
     client = TelegramClient(str(SESSION_FILE), cfg["api_id"], cfg["api_hash"])
     await client.connect()
@@ -282,8 +291,13 @@ async def cmd_fetch(cfg: dict) -> None:
                 async for msg in client.iter_messages(entity, limit=iter_cap):
                     if fetched >= POSTS_PER_CHANNEL:
                         break
-                    # iter_messages is newest-first; older than cutoff → stop
-                    if msg.date and msg.date < cutoff:
+                    # iter_messages is newest-first; older than cutoff → stop.
+                    # Telethon usually returns UTC-aware datetimes, but normalize
+                    # defensively so a stub/older version can't crash the channel.
+                    msg_dt = msg.date
+                    if msg_dt and msg_dt.tzinfo is None:
+                        msg_dt = msg_dt.replace(tzinfo=timezone.utc)
+                    if msg_dt and msg_dt < cutoff:
                         break
                     text = (msg.message or "").strip()
                     if not text:
@@ -296,7 +310,7 @@ async def cmd_fetch(cfg: dict) -> None:
                             "url": f"https://t.me/{ch_norm}/{msg.id}",
                             "title": first_line_title(text, max_len=80),
                             "text": text[:TEXT_TRUNCATE],
-                            "date": msg.date.isoformat() if msg.date else "",
+                            "date": msg_dt.isoformat() if msg_dt else "",
                             "views": msg.views or 0,
                             "forwards": msg.forwards or 0,
                             "reactions": total_reactions(msg.reactions),
@@ -305,8 +319,17 @@ async def cmd_fetch(cfg: dict) -> None:
                     )
                     fetched += 1
             except FloodWaitError as e:
-                print(f"  ⏳ FloodWait on @{ch_norm}: {e.seconds}s, skipping channel")
-                await asyncio.sleep(min(e.seconds, 60))
+                # Telegram's flood-wait is a hard minimum; sleeping less just
+                # triggers another FloodWait on the next request, potentially
+                # cascading to other channels. Sleep the full duration for
+                # short waits; for long waits, skip without sleeping so the
+                # cron run finishes on time and lets other collectors proceed.
+                if e.seconds <= FLOOD_WAIT_THRESHOLD:
+                    print(f"  ⏳ FloodWait on @{ch_norm}: sleeping {e.seconds}s")
+                    await asyncio.sleep(e.seconds)
+                else:
+                    print(f"  ⏳ FloodWait on @{ch_norm}: {e.seconds}s "
+                          f"exceeds {FLOOD_WAIT_THRESHOLD}s threshold, skipping")
                 continue
             except Exception as e:
                 print(f"  ❌ error fetching @{ch_norm}: {e}")
