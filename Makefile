@@ -1,12 +1,18 @@
 SHELL := /bin/bash
 
-# Deploy target (override via environment or .env.deploy)
+# Per-host deploy config — keep it out of the public repo.
+# Copy .env.deploy.example to .env.deploy and fill SSH_JUMP / SSH_TARGET / REMOTE_DIR.
+-include .env.deploy
+
+# Fallback defaults; override on the command line if .env.deploy is missing.
 SSH_JUMP   ?=
 SSH_TARGET ?= ubuntu@example.com
 REMOTE_DIR ?= /home/ubuntu/azalio_tech_summary
 
 SSH_OPTS := $(if $(SSH_JUMP),-J $(SSH_JUMP))
-DEPLOY_FILES := main.py core.py collectors.py dedup.py standalone_reddit_digest.py test_dedup.py requirements.txt
+DEPLOY_FILES := main.py core.py collectors.py dedup.py \
+                standalone_reddit_digest.py standalone_telegram_digest.py \
+                test_dedup.py requirements.txt
 
 BACKUP_DIR ?= backups
 BACKUP_FILE := $(BACKUP_DIR)/$(shell date +%F).tgz
@@ -20,12 +26,13 @@ help:
 	@echo '  make deploy        scp source files to $$SSH_TARGET:$$REMOTE_DIR'
 	@echo '  make backup        snapshot .env + workspace from $$SSH_TARGET to $$BACKUP_FILE'
 	@echo '  make restore       restore $$BACKUP onto $$SSH_TARGET:$$REMOTE_DIR'
-	@echo '                     Override via env: SSH_JUMP, SSH_TARGET, REMOTE_DIR'
+	@echo '                     Configure SSH_JUMP/SSH_TARGET/REMOTE_DIR in .env.deploy'
+	@echo '                     (copy env.deploy.example) or pass them inline.'
 	@echo ''
-	@echo 'Example:'
-	@echo '  SSH_TARGET=user@host REMOTE_DIR=/srv/bot make deploy'
-	@echo '  SSH_TARGET=user@host REMOTE_DIR=/srv/bot make backup'
-	@echo '  SSH_TARGET=user@host REMOTE_DIR=/srv/bot BACKUP=backups/2026-05-11.tgz make restore'
+	@echo 'Example (with .env.deploy in place):'
+	@echo '  make deploy'
+	@echo '  make backup'
+	@echo '  BACKUP=backups/2026-05-11.tgz make restore'
 
 install:
 	pip install -r requirements.txt

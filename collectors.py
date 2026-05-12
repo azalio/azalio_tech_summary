@@ -4,6 +4,7 @@ import json
 import re
 import subprocess
 import sqlite3
+import sys
 import requests
 import feedparser
 from datetime import datetime, timedelta, timezone
@@ -16,7 +17,10 @@ class Collectors:
     def __init__(self, workspace, dedup=None):
         self.workspace = workspace
         self.dedup = dedup
-        self.python_bin = os.environ.get("PYTHON_BIN", "python3")
+        # Default to the interpreter that's running us — when main.py is launched
+        # via .venv/bin/python, subprocesses inherit the same venv (so telethon /
+        # praw / etc. are importable). PYTHON_BIN env var still overrides.
+        self.python_bin = os.environ.get("PYTHON_BIN", sys.executable)
         self.venv_python = os.environ.get("VENV_PYTHON", self.python_bin)
         self.db_path = os.path.join(workspace, "memory/reddit_sent.db")
 
@@ -24,13 +28,18 @@ class Collectors:
         self.reddit_raw_json = os.path.join(workspace, "memory/reddit_ai_raw.json")
         self.market_news_json = os.path.join(workspace, "memory/market_news_raw.json")
         self.ru_news_json = os.path.join(workspace, "memory/ru_news_latest.json")
+        self.telegram_raw_json = os.path.join(workspace, "memory/telegram_raw.json")
 
-        # Paths to fetcher sub-scripts. Reddit digest ships with this repo;
-        # the others are optional external scripts (collector silently skips
-        # if path is unset or file missing).
+        # Paths to fetcher sub-scripts. Reddit + Telegram digests ship with
+        # this repo; the others are optional external scripts (collector
+        # silently skips if path is unset or file missing).
         repo_dir = os.path.dirname(os.path.abspath(__file__))
         self.reddit_script = os.environ.get(
             "REDDIT_SCRIPT", os.path.join(repo_dir, "standalone_reddit_digest.py")
+        )
+        self.telegram_script = os.environ.get(
+            "TELEGRAM_DIGEST_SCRIPT",
+            os.path.join(repo_dir, "standalone_telegram_digest.py"),
         )
         self.ru_news_script = os.environ.get("RU_NEWS_SCRIPT", "")
         self.market_news_script = os.environ.get("MARKET_NEWS_SCRIPT", "")
@@ -132,11 +141,22 @@ class Collectors:
 
     def _read_and_clear(self, path):
         if not os.path.exists(path): return []
-        with open(path, "r") as f:
-            try: data = json.load(f)
-            except: data = []
-        with open(path, "w") as f:
-            json.dump([], f)
+        # Explicit utf-8 — fetcher scripts write with ensure_ascii=False, so on
+        # locales whose default encoding isn't utf-8 a bare open() would raise
+        # UnicodeDecodeError on Cyrillic/emoji posts and silently drop them.
+        # OSError covers permission / I/O / broken symlink so the hourly cron
+        # keeps running on other sources instead of crashing the whole digest.
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except (json.JSONDecodeError, UnicodeDecodeError, OSError) as e:
+            print(f"  _read_and_clear: failed to read {path}: {e}")
+            data = []
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump([], f)
+        except OSError as e:
+            print(f"  _read_and_clear: failed to truncate {path}: {e}")
         return data
 
     def _fetch_rss(self, feeds, source_label, max_per_feed=5, max_total=20, max_age_days=7):
@@ -158,18 +178,18 @@ class Collectors:
                     pub = entry.get("published_parsed") or entry.get("updated_parsed")
                     if pub:
                         try:
-                            if _time.mktime(pub) < cutoff_ts:
+                            if _time.mktime(pub) < cutoff_ts:  # type: ignore[arg-type]
                                 continue
                         except (TypeError, ValueError, OverflowError):
                             pass
-                    link = entry.get("link", "")
+                    link = str(entry.get("link") or "")
                     if self._is_seen(link):
                         continue
                     self._mark_seen(link, f"{source_label}:{name}")
-                    title = entry.get("title", "").strip()
+                    title = str(entry.get("title") or "").strip()
                     if len(title) < 15:
                         continue
-                    summary = entry.get("summary", "")[:300].strip()
+                    summary = str(entry.get("summary") or "")[:300].strip()
                     if self._is_semantic_dup(title, f"{source_label}:{name}", link, summary):
                         continue
                     content += f"[{name}] {title} - Link: {link}\n"
@@ -207,6 +227,63 @@ class Collectors:
             content += f"Link: {url}\n"
             if p.get('text'): content += f"Context: {p['text'][:400]}\n"
         return content
+
+    def collect_telegram(self):
+        """Telegram channels via Telethon (MTProto user account).
+
+        Channels list comes from TELEGRAM_CHANNELS env var. Standalone script
+        pulls up to 10 latest text posts per channel; this method dedupes and
+        formats them for the digest prompt. Silently disabled if MTProto creds
+        or channel list are missing.
+        """
+        if not (os.environ.get("TELEGRAM_API_ID")
+                and os.environ.get("TELEGRAM_API_HASH")
+                and os.environ.get("TELEGRAM_CHANNELS")):
+            return ""
+        print("Fetching Telegram channels...")
+        try:
+            subprocess.run([self.python_bin, self.telegram_script], check=True, timeout=600)
+        except Exception as e:
+            # Bail without reading the JSON — otherwise stale data from a prior
+            # successful run would leak into this digest.
+            print(f"  Telegram fetcher error: {e}")
+            return ""
+        data = self._read_and_clear(self.telegram_raw_json)
+        if not data: return ""
+
+        # Markers in Russian so the LLM (which writes the Russian digest) reads them
+        # natively. "[фото]/[видео]" flag posts whose visual content the LLM can't see.
+        media_ru = {"photo": "фото", "video": "видео", "gif": "gif",
+                    "voice": "голос", "audio": "аудио", "file": "файл"}
+
+        content = "TELEGRAM CHANNELS:\n"
+        count = 0
+        for p in data:
+            url = p.get("url", "")
+            if not url or self._is_seen(url):
+                continue
+            channel = p.get("channel", "?")
+            source = f"Telegram:@{channel}"
+            self._mark_seen(url, source)
+            title = (p.get("title") or "").strip() or "(no title)"
+            text = p.get("text", "") or ""
+            desc = text[:300]
+            if self._is_semantic_dup(title, source, url, desc):
+                continue
+            metrics = []
+            if p.get("views"): metrics.append(f"{p['views']} views")
+            if p.get("reactions"): metrics.append(f"{p['reactions']} reactions")
+            if p.get("forwards"): metrics.append(f"{p['forwards']} forwards")
+            media_tags = "".join(f"[{media_ru.get(m, m)}]" for m in p.get("media") or [])
+            prefix = f"{media_tags} " if media_tags else ""
+            content += f"\n[@{channel}] {prefix}{title}\n"
+            if metrics:
+                content += f"  ({', '.join(metrics)})\n"
+            content += f"Link: {url}\n"
+            if text and text != title:
+                content += f"Context: {text[:400]}\n"
+            count += 1
+        return content if count > 0 else ""
 
     def collect_market_news(self):
         if not self.market_news_script:
