@@ -4,6 +4,7 @@ import json
 import re
 import subprocess
 import sqlite3
+import sys
 import requests
 import feedparser
 from datetime import datetime, timedelta, timezone
@@ -16,7 +17,10 @@ class Collectors:
     def __init__(self, workspace, dedup=None):
         self.workspace = workspace
         self.dedup = dedup
-        self.python_bin = os.environ.get("PYTHON_BIN", "python3")
+        # Default to the interpreter that's running us — when main.py is launched
+        # via .venv/bin/python, subprocesses inherit the same venv (so telethon /
+        # praw / etc. are importable). PYTHON_BIN env var still overrides.
+        self.python_bin = os.environ.get("PYTHON_BIN", sys.executable)
         self.venv_python = os.environ.get("VENV_PYTHON", self.python_bin)
         self.db_path = os.path.join(workspace, "memory/reddit_sent.db")
 
@@ -229,7 +233,10 @@ class Collectors:
         try:
             subprocess.run([self.python_bin, self.telegram_script], check=True, timeout=600)
         except Exception as e:
+            # Bail without reading the JSON — otherwise stale data from a prior
+            # successful run would leak into this digest.
             print(f"  Telegram fetcher error: {e}")
+            return ""
         data = self._read_and_clear(self.telegram_raw_json)
         if not data: return ""
 

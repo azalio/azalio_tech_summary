@@ -9,8 +9,9 @@ Pulls latest N posts from configured channels via Telethon (MTProto, user accoun
 Channels are configured via TELEGRAM_CHANNELS env var (comma-separated, with or
 without leading "@" or "https://t.me/" prefix).
 
-Auth: TELEGRAM_API_ID + TELEGRAM_API_HASH + TELEGRAM_PHONE.
-Session file: {workspace}/memory/telegram.session (Telethon appends ".session").
+Auth: TELEGRAM_API_ID + TELEGRAM_API_HASH always; TELEGRAM_PHONE only for the
+one-off `auth-start` step (after that the session file is enough).
+Session file: {workspace}/memory/telegram.session.
 
 Subcommands:
   fetch        (default) — pull latest posts from every channel
@@ -53,6 +54,9 @@ RAW_JSON_PATH = WORKSPACE / "memory" / "telegram_raw.json"
 
 
 def load_config() -> dict:
+    """Phone is optional here — only `auth-start` actually needs it; fetch/whoami
+    run off the existing session file.
+    """
     api_id = os.environ.get("TELEGRAM_API_ID", "")
     api_hash = os.environ.get("TELEGRAM_API_HASH", "")
     phone = os.environ.get("TELEGRAM_PHONE", "")
@@ -66,8 +70,6 @@ def load_config() -> dict:
         missing.append("TELEGRAM_API_ID")
     if not api_hash:
         missing.append("TELEGRAM_API_HASH")
-    if not phone:
-        missing.append("TELEGRAM_PHONE")
     if missing:
         sys.exit(
             f"❌ Missing env vars: {missing}\n"
@@ -140,6 +142,11 @@ def detect_media(msg) -> list[str]:
 
 
 async def cmd_auth_start(cfg: dict) -> None:
+    if not cfg["phone"]:
+        sys.exit(
+            "❌ TELEGRAM_PHONE is required for auth-start (initial login).\n"
+            "   Set it in .env, e.g. TELEGRAM_PHONE=+71234567890"
+        )
     print("🔐 Telegram auth (step 1): sending SMS code")
     SESSION_FILE.parent.mkdir(parents=True, exist_ok=True)
     client = TelegramClient(str(SESSION_FILE), cfg["api_id"], cfg["api_hash"])
@@ -150,7 +157,7 @@ async def cmd_auth_start(cfg: dict) -> None:
             assert isinstance(me, TLUser)
             uname = me.username or "no_username"
             print(f"✅ Already authorized as {me.first_name} (@{uname}) id={me.id}")
-            print(f"   To switch accounts: delete {SESSION_FILE}.session and rerun.")
+            print(f"   To switch accounts: delete {SESSION_FILE} and rerun.")
             return
         sent = await client.send_code_request(cfg["phone"])
         AUTH_PENDING_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -204,7 +211,7 @@ async def cmd_auth_complete(cfg: dict, code: str, password: str | None) -> None:
         AUTH_PENDING_FILE.unlink(missing_ok=True)
         uname = me.username or "no_username"
         print(f"✅ Authorized as {me.first_name} (@{uname}) id={me.id}")
-        print(f"   Session saved: {SESSION_FILE}.session")
+        print(f"   Session saved: {SESSION_FILE}")
     finally:
         await client.disconnect()  # type: ignore[misc]
 
@@ -221,21 +228,28 @@ async def cmd_whoami(cfg: dict) -> None:
             try:
                 entity = await client.get_entity(normalize_channel(ch))
                 title = getattr(entity, "title", None) or getattr(entity, "first_name", "?")
-                username = getattr(entity, "username", None) or "(no @username)"
-                print(f"    • {title} — @{username}")
+                username = getattr(entity, "username", None)
+                display = f"@{username}" if username else "(no public @username)"
+                print(f"    • {title} — {display}")
             except Exception as e:
                 print(f"    • {ch}: ❌ {e}")
 
 
 async def cmd_fetch(cfg: dict) -> None:
     RAW_JSON_PATH.parent.mkdir(parents=True, exist_ok=True)
+    # Truncate immediately so a crash mid-fetch leaves an empty file rather than
+    # stale data from the previous run that collect_telegram() would re-ingest.
+    with RAW_JSON_PATH.open("w", encoding="utf-8") as f:
+        json.dump([], f)
+
     if not cfg["channels"]:
         print("⚠️ TELEGRAM_CHANNELS is empty — nothing to fetch.")
-        with RAW_JSON_PATH.open("w", encoding="utf-8") as f:
-            json.dump([], f)
         return
 
     cutoff = datetime.now(timezone.utc) - timedelta(days=MAX_AGE_DAYS)
+    # Cap to bound API usage on channels heavy on media-only posts; the
+    # fetched-counter and age cutoff are the real stop conditions.
+    iter_cap = POSTS_PER_CHANNEL * 5
 
     async with TelegramClient(str(SESSION_FILE), cfg["api_id"], cfg["api_hash"]) as client:
         if not await client.is_user_authorized():
@@ -253,7 +267,9 @@ async def cmd_fetch(cfg: dict) -> None:
             print(f"  Fetching @{ch_norm} ({ch_title})...")
             fetched = 0
             try:
-                async for msg in client.iter_messages(entity, limit=POSTS_PER_CHANNEL):
+                async for msg in client.iter_messages(entity, limit=iter_cap):
+                    if fetched >= POSTS_PER_CHANNEL:
+                        break
                     # iter_messages is newest-first; older than cutoff → stop
                     if msg.date and msg.date < cutoff:
                         break
