@@ -233,6 +233,11 @@ class Collectors:
         data = self._read_and_clear(self.telegram_raw_json)
         if not data: return ""
 
+        # Markers in Russian so the LLM (which writes the Russian digest) reads them
+        # natively. "[фото]/[видео]" flag posts whose visual content the LLM can't see.
+        media_ru = {"photo": "фото", "video": "видео", "gif": "gif",
+                    "voice": "голос", "audio": "аудио", "file": "файл"}
+
         content = "TELEGRAM CHANNELS:\n"
         count = 0
         for p in data:
@@ -251,7 +256,9 @@ class Collectors:
             if p.get("views"): metrics.append(f"{p['views']} views")
             if p.get("reactions"): metrics.append(f"{p['reactions']} reactions")
             if p.get("forwards"): metrics.append(f"{p['forwards']} forwards")
-            content += f"\n[@{channel}] {title}\n"
+            media_tags = "".join(f"[{media_ru.get(m, m)}]" for m in p.get("media") or [])
+            prefix = f"{media_tags} " if media_tags else ""
+            content += f"\n[@{channel}] {prefix}{title}\n"
             if metrics:
                 content += f"  ({', '.join(metrics)})\n"
             content += f"Link: {url}\n"

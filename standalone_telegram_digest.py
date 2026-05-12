@@ -116,6 +116,28 @@ def first_line_title(text: str, max_len: int = 80) -> str:
     return ""
 
 
+def detect_media(msg) -> list[str]:
+    """Classify attached media so the LLM knows the post has visuals it can't see.
+
+    Order matters: msg.document is a catch-all for video/gif/audio/file, so the
+    specific accessors come first.
+    """
+    media: list[str] = []
+    if msg.photo:
+        media.append("photo")
+    if msg.video:
+        media.append("video")
+    elif msg.gif:
+        media.append("gif")
+    elif msg.voice:
+        media.append("voice")
+    elif msg.audio:
+        media.append("audio")
+    elif msg.document:
+        media.append("file")
+    return media
+
+
 async def cmd_auth_start(cfg: dict) -> None:
     print("🔐 Telegram auth (step 1): sending SMS code")
     SESSION_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -244,6 +266,7 @@ async def cmd_fetch(cfg: dict) -> None:
                             "views": msg.views or 0,
                             "forwards": msg.forwards or 0,
                             "reactions": total_reactions(msg.reactions),
+                            "media": detect_media(msg),
                         }
                     )
                     fetched += 1
