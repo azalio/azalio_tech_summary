@@ -365,32 +365,97 @@ class TestNormalizeUrl:
         assert url1 == url2
 
 
+def _bare_collectors(db_path):
+    """Build a Collectors with __init__ bypassed but enough wired up for
+    URL-dedup tests. Used by tests that don't want the full workspace setup."""
+    c = Collectors.__new__(Collectors)
+    c.db_path = db_path
+    c.dedup = None
+    c._pending_marks = []
+    c._pending_marks_set = set()
+    return c
+
+
 class TestUrlDedup:
     def test_is_seen_mark_seen_roundtrip(self, tmp_sent_db):
-        c = Collectors.__new__(Collectors)
-        c.db_path = tmp_sent_db
-        c.dedup = None
+        c = _bare_collectors(tmp_sent_db)
 
         assert c._is_seen("https://example.com/article") is False
         c._mark_seen("https://example.com/article", "test")
+        # In-run: queued URLs are "seen" via the pending set.
         assert c._is_seen("https://example.com/article") is True
 
     def test_url_normalization_in_dedup(self, tmp_sent_db):
         """Mark with tracking params, check without → should match."""
-        c = Collectors.__new__(Collectors)
-        c.db_path = tmp_sent_db
-        c.dedup = None
+        c = _bare_collectors(tmp_sent_db)
 
         c._mark_seen("https://example.com/article?utm_source=twitter", "test")
         assert c._is_seen("https://example.com/article") is True
 
     def test_empty_url_not_seen(self, tmp_sent_db):
-        c = Collectors.__new__(Collectors)
-        c.db_path = tmp_sent_db
-        c.dedup = None
+        c = _bare_collectors(tmp_sent_db)
 
         assert c._is_seen("") is False
         assert c._is_seen(None) is False
+
+
+class TestDeferredCommit:
+    """Regression tests for GitHub issue #2: URL marks must not persist to
+    sent_posts until commit_seen() runs, so a crash between collection and
+    Telegram delivery can't permanently drop items."""
+
+    def test_mark_seen_does_not_persist_until_commit(self, tmp_sent_db):
+        c = _bare_collectors(tmp_sent_db)
+        c._mark_seen("https://example.com/a", "test")
+        c._mark_seen("https://example.com/b", "test")
+
+        # Pending queue holds them but sent_posts is still empty.
+        assert len(c._pending_marks) == 2
+        conn = sqlite3.connect(tmp_sent_db)
+        rows = conn.execute("SELECT COUNT(*) FROM sent_posts").fetchone()[0]
+        conn.close()
+        assert rows == 0
+
+    def test_commit_seen_persists_and_clears(self, tmp_sent_db):
+        c = _bare_collectors(tmp_sent_db)
+        c._mark_seen("https://example.com/a", "test")
+        c._mark_seen("https://example.com/b", "test")
+        c.commit_seen()
+
+        conn = sqlite3.connect(tmp_sent_db)
+        urls = {row[0] for row in conn.execute("SELECT url FROM sent_posts")}
+        conn.close()
+        assert urls == {"https://example.com/a", "https://example.com/b"}
+        # Idempotent: second commit is a no-op.
+        assert c._pending_marks == []
+        assert c._pending_marks_set == set()
+        c.commit_seen()  # must not raise
+
+    def test_uncommitted_marks_dont_leak_to_fresh_collectors(self, tmp_sent_db):
+        """If send_tg fails, a fresh Collectors next run must see the URLs as
+        not-seen — this is the whole point of deferred marking."""
+        c1 = _bare_collectors(tmp_sent_db)
+        c1._mark_seen("https://example.com/lost", "test")
+        # Simulate process death before commit_seen.
+
+        c2 = _bare_collectors(tmp_sent_db)
+        assert c2._is_seen("https://example.com/lost") is False
+
+    def test_committed_marks_survive_into_fresh_collectors(self, tmp_sent_db):
+        c1 = _bare_collectors(tmp_sent_db)
+        c1._mark_seen("https://example.com/kept", "test")
+        c1.commit_seen()
+
+        c2 = _bare_collectors(tmp_sent_db)
+        assert c2._is_seen("https://example.com/kept") is True
+
+    def test_mark_seen_is_idempotent_within_run(self, tmp_sent_db):
+        c = _bare_collectors(tmp_sent_db)
+        c._mark_seen("https://example.com/x", "src1")
+        c._mark_seen("https://example.com/x", "src2")  # duplicate
+        assert len(c._pending_marks) == 1
+        # First source wins (matches old INSERT OR IGNORE semantics).
+        assert c._pending_marks[0][1] == "src1"
 
 
 # ═══════════════════════════════════════════════════════════════════════════

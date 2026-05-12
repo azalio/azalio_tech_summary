@@ -45,30 +45,52 @@ class VibeCore:
         return [p.strip() for p in parts if p.strip()]
 
     def _send_one(self, url, text, chat_id=None):
-        """Send one message, fallback to plain text if HTML fails."""
+        """Send one message, fallback to plain text if HTML fails.
+
+        Returns True if Telegram accepted either the HTML or the plain-text
+        fallback; False if both attempts failed or the HTTP call raised.
+        """
         target_chat = chat_id or self.chat_id
-        resp = requests.post(url, data={
-            "chat_id": target_chat,
-            "text": text,
-            "parse_mode": "HTML",
-        }, timeout=30)
-        result = resp.json()
-        if not result.get("ok"):
-            print(f"  TG HTML error: {result.get('description', 'unknown')}")
-            # Fallback: strip tags and send as plain text
-            plain = re.sub(r'<[^>]+>', '', text)
+        try:
+            resp = requests.post(url, data={
+                "chat_id": target_chat,
+                "text": text,
+                "parse_mode": "HTML",
+            }, timeout=30)
+            result = resp.json()
+        except requests.RequestException as e:
+            print(f"  TG HTML request error: {e}")
+            result = {"ok": False, "description": str(e)}
+
+        if result.get("ok"):
+            return True
+
+        print(f"  TG HTML error: {result.get('description', 'unknown')}")
+        # Fallback: strip tags and send as plain text
+        plain = re.sub(r'<[^>]+>', '', text)
+        try:
             resp = requests.post(url, data={
                 "chat_id": target_chat,
                 "text": plain,
             }, timeout=30)
             result = resp.json()
-            if not result.get("ok"):
-                print(f"  TG plain error: {result.get('description', 'unknown')}")
-            else:
-                print("  TG fallback OK (plain text)")
-        return result
+        except requests.RequestException as e:
+            print(f"  TG plain request error: {e}")
+            return False
+
+        if result.get("ok"):
+            print("  TG fallback OK (plain text)")
+            return True
+        print(f"  TG plain error: {result.get('description', 'unknown')}")
+        return False
 
     def send_tg(self, text, title="INTEL", chat_id=None):
+        """Post the digest to Telegram, splitting long output by topic section.
+
+        Returns True iff every message part was delivered (HTML or plain-text
+        fallback). main.py uses this to gate post-send actions like
+        Collectors.commit_seen() — see GitHub issue #2.
+        """
         target_chat = chat_id or self.chat_id
         url = f"https://api.telegram.org/bot{self.tg_token}/sendMessage"
 
@@ -95,16 +117,17 @@ class VibeCore:
         print(f"Sending to Telegram ({len(full_text)} chars) to {target_chat}...")
 
         if len(full_text) <= self.TG_LIMIT:
-            self._send_one(url, full_text, chat_id=target_chat)
-            return
+            return self._send_one(url, full_text, chat_id=target_chat)
 
         # Split by topic sections and group into messages
         sections = self._split_by_sections(formatted_content)
         if not sections:
             # No sections found, hard split as last resort
+            all_ok = True
             for i in range(0, len(full_text), self.TG_LIMIT):
-                self._send_one(url, full_text[i:i + self.TG_LIMIT], chat_id=target_chat)
-            return
+                if not self._send_one(url, full_text[i:i + self.TG_LIMIT], chat_id=target_chat):
+                    all_ok = False
+            return all_ok
 
         messages = []
         current = header
@@ -120,9 +143,12 @@ class VibeCore:
             messages.append(current.strip())
 
         print(f"  Split into {len(messages)} messages")
+        all_ok = True
         for i, msg in enumerate(messages):
             print(f"  Sending part {i+1}/{len(messages)} ({len(msg)} chars)...")
-            self._send_one(url, msg, chat_id=target_chat)
+            if not self._send_one(url, msg, chat_id=target_chat):
+                all_ok = False
+        return all_ok
 
     def ask_llm(self, prompt):
         """Run an LLM CLI (gemini/codex) in cron-safe mode.

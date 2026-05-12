@@ -89,14 +89,20 @@ SQLite databases, raw collector handoff JSON, and the previous digest text.
    older than the configured TTL.
 4. Each collector returns formatted source lines or an empty string. Optional
    collectors skip themselves when their API key or external script is missing.
-5. URL deduplication stores normalized links in `sent_posts`. Semantic
-   deduplication creates or updates event clusters for non-duplicate titles.
+5. URL deduplication queues normalized links in an in-memory pending set;
+   they are not written to `sent_posts` until the digest is successfully
+   posted (see step 9). Semantic deduplication creates or updates event
+   clusters for non-duplicate titles eagerly during this step.
 6. `main.py` inserts the previous digest and new source data into `VIBE_PROMPT`.
 7. In dry-run mode, the prompt is printed. Otherwise `VibeCore.ask_llm` calls
    Gemini first and then Codex if Gemini is unavailable or fails.
-8. `VibeCore.send_tg` formats the digest, posts it to Telegram, and splits it by
-   topic section when it exceeds the Telegram message limit.
-9. The posted text is written to `last_intel_summary.txt` for the next run.
+8. `VibeCore.send_tg` formats the digest, posts it to Telegram, splits it by
+   topic section when it exceeds the Telegram message limit, and returns
+   whether every part was delivered.
+9. On a successful send, `Collectors.commit_seen` persists the pending URL
+   marks to `sent_posts` and the posted text is written to
+   `last_intel_summary.txt` for the next run. On failure, both are skipped so
+   the next run can retry the same items instead of silently dropping them.
 
 ### Deployment Flow
 
