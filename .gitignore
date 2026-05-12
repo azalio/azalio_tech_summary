@@ -37,3 +37,6 @@ dist/
 
 # Local backups (created by `make backup`)
 backups/
+
+# Per-host deploy config (loaded by Makefile)
+.env.deploy

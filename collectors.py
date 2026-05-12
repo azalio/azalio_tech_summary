@@ -24,13 +24,18 @@ class Collectors:
         self.reddit_raw_json = os.path.join(workspace, "memory/reddit_ai_raw.json")
         self.market_news_json = os.path.join(workspace, "memory/market_news_raw.json")
         self.ru_news_json = os.path.join(workspace, "memory/ru_news_latest.json")
+        self.telegram_raw_json = os.path.join(workspace, "memory/telegram_raw.json")
 
-        # Paths to fetcher sub-scripts. Reddit digest ships with this repo;
-        # the others are optional external scripts (collector silently skips
-        # if path is unset or file missing).
+        # Paths to fetcher sub-scripts. Reddit + Telegram digests ship with
+        # this repo; the others are optional external scripts (collector
+        # silently skips if path is unset or file missing).
         repo_dir = os.path.dirname(os.path.abspath(__file__))
         self.reddit_script = os.environ.get(
             "REDDIT_SCRIPT", os.path.join(repo_dir, "standalone_reddit_digest.py")
+        )
+        self.telegram_script = os.environ.get(
+            "TELEGRAM_DIGEST_SCRIPT",
+            os.path.join(repo_dir, "standalone_telegram_digest.py"),
         )
         self.ru_news_script = os.environ.get("RU_NEWS_SCRIPT", "")
         self.market_news_script = os.environ.get("MARKET_NEWS_SCRIPT", "")
@@ -158,18 +163,18 @@ class Collectors:
                     pub = entry.get("published_parsed") or entry.get("updated_parsed")
                     if pub:
                         try:
-                            if _time.mktime(pub) < cutoff_ts:
+                            if _time.mktime(pub) < cutoff_ts:  # type: ignore[arg-type]
                                 continue
                         except (TypeError, ValueError, OverflowError):
                             pass
-                    link = entry.get("link", "")
+                    link = str(entry.get("link") or "")
                     if self._is_seen(link):
                         continue
                     self._mark_seen(link, f"{source_label}:{name}")
-                    title = entry.get("title", "").strip()
+                    title = str(entry.get("title") or "").strip()
                     if len(title) < 15:
                         continue
-                    summary = entry.get("summary", "")[:300].strip()
+                    summary = str(entry.get("summary") or "")[:300].strip()
                     if self._is_semantic_dup(title, f"{source_label}:{name}", link, summary):
                         continue
                     content += f"[{name}] {title} - Link: {link}\n"
@@ -207,6 +212,53 @@ class Collectors:
             content += f"Link: {url}\n"
             if p.get('text'): content += f"Context: {p['text'][:400]}\n"
         return content
+
+    def collect_telegram(self):
+        """Telegram channels via Telethon (MTProto user account).
+
+        Channels list comes from TELEGRAM_CHANNELS env var. Standalone script
+        pulls up to 10 latest text posts per channel; this method dedupes and
+        formats them for the digest prompt. Silently disabled if MTProto creds
+        or channel list are missing.
+        """
+        if not (os.environ.get("TELEGRAM_API_ID")
+                and os.environ.get("TELEGRAM_API_HASH")
+                and os.environ.get("TELEGRAM_CHANNELS")):
+            return ""
+        print("Fetching Telegram channels...")
+        try:
+            subprocess.run([self.python_bin, self.telegram_script], check=True, timeout=600)
+        except Exception as e:
+            print(f"  Telegram fetcher error: {e}")
+        data = self._read_and_clear(self.telegram_raw_json)
+        if not data: return ""
+
+        content = "TELEGRAM CHANNELS:\n"
+        count = 0
+        for p in data:
+            url = p.get("url", "")
+            if not url or self._is_seen(url):
+                continue
+            channel = p.get("channel", "?")
+            source = f"Telegram:@{channel}"
+            self._mark_seen(url, source)
+            title = (p.get("title") or "").strip() or "(no title)"
+            text = p.get("text", "") or ""
+            desc = text[:300]
+            if self._is_semantic_dup(title, source, url, desc):
+                continue
+            metrics = []
+            if p.get("views"): metrics.append(f"{p['views']} views")
+            if p.get("reactions"): metrics.append(f"{p['reactions']} reactions")
+            if p.get("forwards"): metrics.append(f"{p['forwards']} forwards")
+            content += f"\n[@{channel}] {title}\n"
+            if metrics:
+                content += f"  ({', '.join(metrics)})\n"
+            content += f"Link: {url}\n"
+            if text and text != title:
+                content += f"Context: {text[:400]}\n"
+            count += 1
+        return content if count > 0 else ""
 
     def collect_market_news(self):
         if not self.market_news_script:

@@ -148,6 +148,8 @@ def main():
     # Existing sources
     reddit = collectors.collect_reddit()
     if reddit: all_intelligence_data += "\n" + reddit
+    telegram = collectors.collect_telegram()
+    if telegram: all_intelligence_data += "\n" + telegram
     market = collectors.collect_market_news()
     if market: all_intelligence_data += "\n" + market
     ru_news = collectors.collect_ru_news()

@@ -18,6 +18,7 @@ Output goes to ~30 buckets per day, ~5-15 bullets per digest after dedup.
 ## Sources
 
 - **Reddit** — ~30 tech subreddits via Reddit API (programming, kubernetes, MachineLearning, ClaudeAI, ...).
+- **Telegram channels** — last 10 text posts per channel via Telethon/MTProto (optional, channel list in `TELEGRAM_CHANNELS`).
 - **HackerNews** — front page via Algolia.
 - **Tech press (RSS)** — TechCrunch, Ars Technica, The Verge, Wired, MIT Tech Review, IEEE Spectrum, The Register.
 - **AI research** — HuggingFace Daily Papers (upvotes ≥ 100), ArXiv RSS (cs.AI, cs.LG, cs.CL).
@@ -90,9 +91,27 @@ cp env.example .env
 | `TELEGRAM_DEFAULT_CHAT_ID` | Fallback chat (your user id from [@userinfobot](https://t.me/userinfobot)) |
 | `TELEGRAM_DIGEST_CHAT` | Channel for the hourly digest. **Override the default** — `@azalio_tech_summary` belongs to the author. |
 
-Optional (collectors silently skip when unset): `FINNHUB_API_KEY`, `NEWSAPI_KEY`, `GEMINI_BIN`, `CODEX_BIN`, `RU_NEWS_SCRIPT`, `MARKET_NEWS_SCRIPT`. See `env.example` for the full list.
+Optional (collectors silently skip when unset): `FINNHUB_API_KEY`, `NEWSAPI_KEY`, `GEMINI_BIN`, `CODEX_BIN`, `RU_NEWS_SCRIPT`, `MARKET_NEWS_SCRIPT`, `TELEGRAM_API_ID` / `TELEGRAM_API_HASH` / `TELEGRAM_PHONE` / `TELEGRAM_CHANNELS` (Telegram channel collector). See `env.example` for the full list.
 
 If the LLM CLIs are not on your `$PATH` (e.g. cron has a minimal PATH), pin them explicitly: `GEMINI_BIN=/home/you/.npm-global/bin/gemini`.
+
+### Telegram channel collector (optional)
+
+To track posts from Telegram channels you specify in `TELEGRAM_CHANNELS`:
+
+1. Get `api_id` / `api_hash` at [my.telegram.org/apps](https://my.telegram.org/apps) and set them in `.env` along with `TELEGRAM_PHONE` (e.g. `+71234567890`) and `TELEGRAM_CHANNELS` (comma-separated, e.g. `@durov,python_weekly`).
+2. One-time login (Telethon session, stored under `workspace/memory/telegram.session`):
+
+   ```bash
+   .venv/bin/python standalone_telegram_digest.py auth-start
+   # → Telegram sends a code to the "Telegram" chat (id 777000). Grab it, then:
+   .venv/bin/python standalone_telegram_digest.py auth-complete 12345
+   # If 2FA is enabled: ... auth-complete 12345 --password '<your-2fa-pw>'
+   ```
+
+3. Verify: `.venv/bin/python standalone_telegram_digest.py whoami` — prints your user id and resolves each configured channel.
+
+The hourly `main.py` will now pull the latest 10 text posts per channel (media-only posts are skipped). Without these env vars the collector stays silently disabled.
 
 ### Run once
 
@@ -113,9 +132,18 @@ Cron has a minimal `$PATH`, so the LLM CLI may not be found by name. Pin it via 
 
 ### Deploy to a remote server
 
+Stash your host config locally so you don't have to retype it every time:
+
 ```bash
-SSH_TARGET=user@host REMOTE_DIR=/srv/bot make deploy
-# .env must already exist on the server
+cp env.deploy.example .env.deploy
+# edit .env.deploy → fill SSH_JUMP, SSH_TARGET, REMOTE_DIR
+make deploy
+```
+
+`.env.deploy` is gitignored. To deploy without that file, pass the vars inline:
+
+```bash
+SSH_JUMP=root@jump SSH_TARGET=user@host REMOTE_DIR=/srv/bot make deploy
 ```
 
 `make deploy` only scp's source files (`*.py`, `requirements.txt`). It never touches `.env` or `workspace/` on the target — they survive every redeploy.
