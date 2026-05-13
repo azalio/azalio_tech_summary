@@ -48,7 +48,9 @@ class VibeCore:
         """Send one message, fallback to plain text if HTML fails.
 
         Returns True if Telegram accepted either the HTML or the plain-text
-        fallback; False if both attempts failed or the HTTP call raised.
+        fallback; False if both attempts failed, the HTTP call raised, or the
+        response body wasn't decodable JSON (caught as ValueError, which
+        json.JSONDecodeError and requests.JSONDecodeError both subclass).
         """
         target_chat = chat_id or self.chat_id
         try:
@@ -58,7 +60,7 @@ class VibeCore:
                 "parse_mode": "HTML",
             }, timeout=30)
             result = resp.json()
-        except requests.RequestException as e:
+        except (requests.RequestException, ValueError) as e:
             print(f"  TG HTML request error: {e}")
             result = {"ok": False, "description": str(e)}
 
@@ -74,7 +76,7 @@ class VibeCore:
                 "text": plain,
             }, timeout=30)
             result = resp.json()
-        except requests.RequestException as e:
+        except (requests.RequestException, ValueError) as e:
             print(f"  TG plain request error: {e}")
             return False
 

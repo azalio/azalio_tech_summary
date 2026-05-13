@@ -457,6 +457,23 @@ class TestDeferredCommit:
         # First source wins (matches old INSERT OR IGNORE semantics).
         assert c._pending_marks[0][1] == "src1"
 
+    def test_commit_seen_failure_preserves_queue(self, tmp_path):
+        """If SQLite write fails, the in-memory queue must survive so a
+        future retry (or the next call) can re-attempt the writes."""
+        # Parent directory doesn't exist → sqlite3.connect raises
+        # OperationalError, exercising the except path in commit_seen.
+        c = _bare_collectors(str(tmp_path / "missing-subdir" / "sent.db"))
+        c._mark_seen("https://example.com/a", "test")
+        c._mark_seen("https://example.com/b", "test")
+
+        c.commit_seen()  # logs error, must not raise
+
+        assert len(c._pending_marks) == 2
+        assert c._pending_marks_set == {
+            "https://example.com/a",
+            "https://example.com/b",
+        }
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # 4. E2E scenario tests

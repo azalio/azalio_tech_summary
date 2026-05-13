@@ -136,12 +136,15 @@ class Collectors:
         self._pending_marks_set.add(url)
 
     def commit_seen(self):
-        """Persist pending URL marks to sent_posts. Idempotent: clears the
-        queue after writing so a second call is a no-op."""
+        """Persist pending URL marks to sent_posts. On success the in-memory
+        queue is cleared so a second call is a no-op; on failure the queue is
+        preserved so a caller can retry (INSERT OR IGNORE keeps it safe to
+        re-attempt the same rows)."""
         if not self._pending_marks:
             return
         now_str = datetime.now().isoformat()
         rows = [(url, source, now_str) for url, source in self._pending_marks]
+        conn = None
         try:
             conn = sqlite3.connect(self.db_path)
             conn.executemany(
@@ -149,16 +152,19 @@ class Collectors:
                 rows,
             )
             conn.commit()
-            conn.close()
-            print(f"  commit_seen: persisted {len(rows)} URL marks")
+            # total_changes reflects rows actually inserted; INSERT OR IGNORE
+            # skips existing PKs so this can be less than len(rows).
+            written = conn.total_changes
         except Exception as e:
             print(f"  commit_seen error: {e}")
+            return
         finally:
-            # Clear unconditionally — partial commits already wrote rows, and a
-            # SQLite-side failure is unrecoverable here; carrying stale state
-            # would risk double-commit on retry.
-            self._pending_marks.clear()
-            self._pending_marks_set.clear()
+            if conn is not None:
+                conn.close()
+        print(f"  commit_seen: wrote {written}/{len(rows)} URL marks "
+              f"({len(rows) - written} already present)")
+        self._pending_marks.clear()
+        self._pending_marks_set.clear()
 
     def _cleanup_seen(self, ttl_days=30):
         """Remove sent_posts entries older than ttl_days."""

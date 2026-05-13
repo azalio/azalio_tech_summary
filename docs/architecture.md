@@ -102,7 +102,10 @@ SQLite databases, raw collector handoff JSON, and the previous digest text.
 9. On a successful send, `Collectors.commit_seen` persists the pending URL
    marks to `sent_posts` and the posted text is written to
    `last_intel_summary.txt` for the next run. On failure, both are skipped so
-   the next run can retry the same items instead of silently dropping them.
+   the next run's URL dedup gate sees the same items as un-seen. Semantic
+   dedup state from step 5 is still committed eagerly, so a rerun may still
+   filter the items as event duplicates — deferring semantic-dedup commits
+   is out of scope for this design.
 
 ### Deployment Flow
 
