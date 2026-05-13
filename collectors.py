@@ -24,6 +24,13 @@ class Collectors:
         self.venv_python = os.environ.get("VENV_PYTHON", self.python_bin)
         self.db_path = os.path.join(workspace, "memory/reddit_sent.db")
 
+        # Pending URL-mark queue: collectors call _mark_seen during a run, but
+        # the writes don't hit sent_posts until commit_seen() runs — and that
+        # only happens after a successful Telegram delivery. Prevents the
+        # "marked but never published" data-loss class (see GitHub issue #2).
+        self._pending_marks = []
+        self._pending_marks_set = set()
+
         # Paths to JSONs
         self.reddit_raw_json = os.path.join(workspace, "memory/reddit_ai_raw.json")
         self.market_news_json = os.path.join(workspace, "memory/market_news_raw.json")
@@ -101,6 +108,8 @@ class Collectors:
     def _is_seen(self, url):
         if not url: return False
         url = self._normalize_url(url)
+        if url in self._pending_marks_set:
+            return True
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
@@ -113,18 +122,49 @@ class Collectors:
             return False
 
     def _mark_seen(self, url, source="generic"):
+        """Queue a URL to be persisted to sent_posts after digest delivery.
+
+        Within the current run, _is_seen() returns True for queued URLs (via
+        _pending_marks_set), so callers see the same "seen" semantics as before.
+        commit_seen() writes to SQLite only after Telegram delivery succeeds.
+        """
         if not url: return
         url = self._normalize_url(url)
+        if url in self._pending_marks_set:
+            return
+        self._pending_marks.append((url, source))
+        self._pending_marks_set.add(url)
+
+    def commit_seen(self):
+        """Persist pending URL marks to sent_posts. On success the in-memory
+        queue is cleared so a second call is a no-op; on failure the queue is
+        preserved so a caller can retry (INSERT OR IGNORE keeps it safe to
+        re-attempt the same rows)."""
+        if not self._pending_marks:
+            return
+        now_str = datetime.now().isoformat()
+        rows = [(url, source, now_str) for url, source in self._pending_marks]
+        conn = None
         try:
             conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            now_str = datetime.now().isoformat()
-            cursor.execute('INSERT OR IGNORE INTO sent_posts (url, subreddit, sent_at) VALUES (?, ?, ?)',
-                           (url, source, now_str))
+            conn.executemany(
+                'INSERT OR IGNORE INTO sent_posts (url, subreddit, sent_at) VALUES (?, ?, ?)',
+                rows,
+            )
             conn.commit()
-            conn.close()
+            # total_changes reflects rows actually inserted; INSERT OR IGNORE
+            # skips existing PKs so this can be less than len(rows).
+            written = conn.total_changes
         except Exception as e:
-            print(f"  _mark_seen error: {e}")
+            print(f"  commit_seen error: {e}")
+            return
+        finally:
+            if conn is not None:
+                conn.close()
+        print(f"  commit_seen: wrote {written}/{len(rows)} URL marks "
+              f"({len(rows) - written} already present)")
+        self._pending_marks.clear()
+        self._pending_marks_set.clear()
 
     def _cleanup_seen(self, ttl_days=30):
         """Remove sent_posts entries older than ttl_days."""

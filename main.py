@@ -215,8 +215,17 @@ def main():
         assert core is not None
         summary = core.ask_llm(prompt)
         result = summary if summary else all_intelligence_data
-        core.send_tg(result, title="WORLD INTEL BRIEF", chat_id=DIGEST_CHAT)
-        save_summary(result)
+        # commit_seen + save_summary only after a successful Telegram delivery.
+        # If send fails, pending URL marks stay un-persisted so the next run's
+        # URL gate sees the same items as un-seen. Note: EventDedup commits
+        # are still eager (issue #2 only defers URL marks), so a rerun may
+        # still drop items as semantic duplicates — but they won't be
+        # silently lost to a stale sent_posts row.
+        if core.send_tg(result, title="WORLD INTEL BRIEF", chat_id=DIGEST_CHAT):
+            collectors.commit_seen()
+            save_summary(result)
+        else:
+            print("send_tg failed — leaving URL marks uncommitted for retry")
 
 if __name__ == "__main__":
     main()
