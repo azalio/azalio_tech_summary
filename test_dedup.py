@@ -18,6 +18,7 @@ from dedup import (
     jaccard_similarity,
 )
 from collectors import Collectors
+from core import VibeCore
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────
@@ -594,3 +595,58 @@ class TestCisaScenario:
 
         dedup.close()
         shutil.rmtree(tmp)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 5. send_tg long-section splitting (core.VibeCore)
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _bare_core():
+    """VibeCore with __init__ bypassed — its constructor demands a real TG
+    token but the helpers under test only touch local strings."""
+    c = VibeCore.__new__(VibeCore)
+    c.TG_LIMIT = 4000
+    return c
+
+
+class TestSplitOversizedSection:
+    def test_short_section_returned_as_is(self):
+        c = _bare_core()
+        section = "<b>🔥 Title</b>\n• one\n• two"
+        assert c._split_oversized_section(section, max_len=4000) == [section]
+
+    def test_long_section_split_by_lines(self):
+        c = _bare_core()
+        header = "<b>🤖 AI / ML</b>"
+        bullets = [f"• bullet {i} " + "x" * 200 for i in range(30)]
+        section = "\n".join([header] + bullets)
+        max_len = 1000
+
+        chunks = c._split_oversized_section(section, max_len=max_len)
+
+        assert len(chunks) > 1
+        for chunk in chunks:
+            assert len(chunk) <= max_len, f"chunk too long: {len(chunk)}"
+            # Every chunk must carry the header so context isn't lost
+            assert chunk.startswith(header)
+            # No chunk should be header-only
+            assert "\n" in chunk
+
+    def test_section_without_header_still_splits(self):
+        c = _bare_core()
+        section = "\n".join([f"• item {i} " + "y" * 150 for i in range(20)])
+        chunks = c._split_oversized_section(section, max_len=500)
+        assert len(chunks) > 1
+        for chunk in chunks:
+            assert len(chunk) <= 500
+            assert "<b>" not in chunk  # no header invented out of thin air
+
+    def test_oversized_single_line_passes_through(self):
+        """If a single line itself exceeds max_len we emit it anyway — better
+        to let plain-text fallback strip HTML than truncate mid-tag."""
+        c = _bare_core()
+        section = "<b>X</b>\n• " + "z" * 5000
+        chunks = c._split_oversized_section(section, max_len=1000)
+        assert len(chunks) == 1
+        # The long line is preserved (no truncation)
+        assert "z" * 5000 in chunks[0]
