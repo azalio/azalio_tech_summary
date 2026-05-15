@@ -5,9 +5,10 @@ SHELL := /bin/bash
 -include .env.deploy
 
 # Fallback defaults; override on the command line if .env.deploy is missing.
+# SSH_JUMP is optional (empty = direct SSH, no bastion).
 SSH_JUMP   ?=
-SSH_TARGET ?= ubuntu@example.com
-REMOTE_DIR ?= /home/ubuntu/azalio_tech_summary
+SSH_TARGET ?= azalio@example.com
+REMOTE_DIR ?= /home/azalio/azalio_tech_summary
 
 SSH_OPTS := $(if $(SSH_JUMP),-J $(SSH_JUMP))
 DEPLOY_FILES := main.py core.py collectors.py dedup.py \
@@ -32,7 +33,7 @@ help:
 	@echo 'Example (with .env.deploy in place):'
 	@echo '  make deploy'
 	@echo '  make backup'
-	@echo '  BACKUP=backups/2026-05-11.tgz make restore'
+	@echo '  BACKUP=backups/YYYY-MM-DD.tgz make restore'
 
 install:
 	pip install -r requirements.txt
