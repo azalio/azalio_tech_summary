@@ -44,6 +44,44 @@ class VibeCore:
         parts = re.split(r'(?=\n<b>[🔥💰🌍🤖⚠️])', text)
         return [p.strip() for p in parts if p.strip()]
 
+    def _split_oversized_section(self, section, max_len):
+        """Split one section into line-bounded chunks each ≤ max_len chars.
+
+        A section starts with a "<b>HEADER</b>" line followed by bullet lines.
+        Each output chunk repeats the section header so readers always see what
+        topic the bullets belong to. Single bullet lines longer than max_len
+        are still emitted (HTML send_one's plain-text fallback strips tags and
+        usually fits) rather than truncated.
+        """
+        if len(section) <= max_len:
+            return [section]
+
+        lines = section.split("\n")
+        header = ""
+        body = lines
+        if lines and lines[0].lstrip().startswith("<b>"):
+            header = lines[0]
+            body = lines[1:]
+
+        def joined_len(parts):
+            return sum(len(p) for p in parts) + max(0, len(parts) - 1)
+
+        chunks = []
+        current = [header] if header else []
+        # When header is present, current always starts with header — only flush
+        # when there's at least one body line in addition to the header.
+        body_floor = 1 if header else 0
+
+        for line in body:
+            if joined_len(current + [line]) > max_len and len(current) > body_floor:
+                chunks.append("\n".join(current))
+                current = [header] if header else []
+            current.append(line)
+
+        if len(current) > body_floor:
+            chunks.append("\n".join(current))
+        return chunks
+
     def _send_one(self, url, text, chat_id=None):
         """Send one message, fallback to plain text if HTML fails.
 
@@ -130,6 +168,17 @@ class VibeCore:
                 if not self._send_one(url, full_text[i:i + self.TG_LIMIT], chat_id=target_chat):
                     all_ok = False
             return all_ok
+
+        # Pre-expand: any single section longer than what fits with the header
+        # gets line-split here so the grouping loop below stays simple.
+        section_budget = self.TG_LIMIT - len(header)
+        expanded = []
+        for section in sections:
+            if len(section) > section_budget:
+                expanded.extend(self._split_oversized_section(section, section_budget))
+            else:
+                expanded.append(section)
+        sections = expanded
 
         messages = []
         current = header
