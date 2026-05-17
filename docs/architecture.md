@@ -23,7 +23,8 @@ In scope:
   prompt is built.
 - Calling an installed LLM CLI, preferring Gemini and falling back to Codex.
 - Formatting Markdown-like LLM output as Telegram-compatible HTML and splitting
-  long digests into multiple Telegram messages.
+  long digests into multiple Telegram messages, including line-bounded splits
+  for oversized topic sections.
 - Deploying the source files to a single remote host via `make deploy`.
 
 Out of scope:
@@ -97,8 +98,8 @@ SQLite databases, raw collector handoff JSON, and the previous digest text.
 7. In dry-run mode, the prompt is printed. Otherwise `VibeCore.ask_llm` calls
    Gemini first and then Codex if Gemini is unavailable or fails.
 8. `VibeCore.send_tg` formats the digest, posts it to Telegram, splits it by
-   topic section when it exceeds the Telegram message limit, and returns
-   whether every part was delivered.
+   topic section when it exceeds the Telegram message limit, line-splits any
+   single oversized section, and returns whether every part was delivered.
 9. On a successful send, `Collectors.commit_seen` persists the pending URL
    marks to `sent_posts` and the posted text is written to
    `last_intel_summary.txt` for the next run. On failure, both are skipped so
@@ -109,9 +110,11 @@ SQLite databases, raw collector handoff JSON, and the previous digest text.
 
 ### Deployment Flow
 
-`make deploy` creates the target directory over SSH and copies the Python source
-files, tests, and `requirements.txt` with `scp`. Runtime `.env` and scheduler
-setup remain host-local responsibilities.
+`make deploy` reads optional host settings from `.env.deploy`, supports direct
+SSH or a bastion via `SSH_JUMP`, creates the target directory over SSH, and
+copies the Python source files, tests, and `requirements.txt` with `scp`.
+Runtime `.env`, workspace state, virtualenv setup, and scheduler setup remain
+host-local responsibilities.
 
 ## Source of Truth
 
@@ -158,7 +161,7 @@ cron, or secrets.
 - HTML formatting uses regular expressions, which can fail on malformed or
   unexpected Markdown from the LLM.
 - Deployment is file-copy based and leaves scheduler, dependency installation,
-  secrets, and rollback mechanics outside the repository.
+  secrets, virtualenv creation, and rollback mechanics outside the repository.
 
 ## ADR Links
 
@@ -166,6 +169,6 @@ No ADR documents are present in this repository as of this review.
 
 ## Freshness
 
-Reviewed on 2026-05-11 against repository evidence in `README.md`, `main.py`,
-`collectors.py`, `dedup.py`, `core.py`, `test_dedup.py`, `env.example`, and
-`Makefile`.
+Reviewed on 2026-05-17 against repository evidence in `README.md`, `main.py`,
+`collectors.py`, `dedup.py`, `core.py`, `test_dedup.py`, `env.example`,
+`env.deploy.example`, and `Makefile`.
