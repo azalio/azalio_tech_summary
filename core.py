@@ -4,6 +4,7 @@ import os
 import json
 import re
 import shutil
+import tempfile
 
 class VibeCore:
     def __init__(self):
@@ -205,13 +206,9 @@ class VibeCore:
         """Run an LLM CLI (gemini/codex) in cron-safe mode.
 
         Cron runs with a minimal PATH, so we try absolute paths first.
+        Codex prints a decorated transcript to stdout, so we redirect its
+        final-message output to a temp file and read it back.
         """
-
-        # CLI lookup: env override → command on PATH
-        candidates = [
-            ("gemini", [os.environ.get("GEMINI_BIN", ""), "gemini"]),
-            ("codex", [os.environ.get("CODEX_BIN", ""), "codex"]),
-        ]
 
         # Extend PATH for subprocesses (cron runs with a minimal PATH)
         extra_paths = [
@@ -222,28 +219,87 @@ class VibeCore:
         env = os.environ.copy()
         env["PATH"] = ":".join(extra_paths + [env.get("PATH", "")])
 
-        for name, paths in candidates:
-            for cli in paths:
-                resolved = cli if os.path.isabs(cli) else shutil.which(cli, path=env["PATH"])
-                if not resolved:
+        # Each entry: (name, path hints, runner). Runner returns clean text or None.
+        candidates = [
+            ("gemini", [os.environ.get("GEMINI_BIN", ""), "gemini"], self._run_gemini),
+            ("codex", [os.environ.get("CODEX_BIN", ""), "codex"], self._run_codex),
+        ]
+
+        # Dedupe by resolved binary: env-var + PATH lookup often point at the
+        # same path, and re-running a hanging CLI just burns another timeout.
+        tried = set()
+        for name, hints, runner in candidates:
+            for cli in hints:
+                if not cli:
                     continue
+                resolved = cli if os.path.isabs(cli) else shutil.which(cli, path=env["PATH"])
+                if not resolved or resolved in tried:
+                    continue
+                tried.add(resolved)
+                print(f"Trying {name} ({resolved})...")
                 try:
-                    print(f"Trying {name} ({resolved})...")
-                    process = subprocess.Popen(
-                        [resolved],
-                        stdin=subprocess.PIPE,
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE,
-                        text=True,
-                        env=env,
-                    )
-                    stdout, stderr = process.communicate(input=prompt, timeout=180)
-                    if process.returncode == 0 and stdout and stdout.strip():
-                        return stdout.strip()
-                    if stderr and stderr.strip():
-                        print(f"{name} stderr: {stderr.strip()[:500]}")
+                    out = runner(resolved, prompt, env, timeout=180)
                 except Exception as e:
                     print(f"{name} failed: {e}")
                     continue
+                if out and out.strip():
+                    return out.strip()
 
         return None
+
+    def _run_subprocess(self, argv, prompt, env, timeout, stdout):
+        """Run argv with prompt on stdin; return (returncode, stdout_text, stderr_text).
+
+        Kills the child on timeout so we don't leak orphaned CLI processes that
+        keep holding network sockets when the next cron tick arrives.
+        """
+        process = subprocess.Popen(
+            argv,
+            stdin=subprocess.PIPE,
+            stdout=stdout,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        try:
+            out, err = process.communicate(input=prompt, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.communicate()
+            raise
+        return process.returncode, out, err
+
+    def _run_gemini(self, resolved, prompt, env, timeout):
+        rc, out, err = self._run_subprocess(
+            [resolved], prompt, env, timeout, stdout=subprocess.PIPE,
+        )
+        if rc == 0 and out and out.strip():
+            return out.strip()
+        if err and err.strip():
+            print(f"gemini stderr: {err.strip()[:500]}")
+        return None
+
+    def _run_codex(self, resolved, prompt, env, timeout):
+        fd, out_path = tempfile.mkstemp(prefix="codex_out_", suffix=".txt")
+        os.close(fd)
+        try:
+            rc, _, err = self._run_subprocess(
+                [resolved, "exec", "--skip-git-repo-check", "-o", out_path, "-"],
+                prompt, env, timeout, stdout=subprocess.DEVNULL,
+            )
+            if rc != 0:
+                if err and err.strip():
+                    print(f"codex stderr: {err.strip()[:500]}")
+                return None
+            try:
+                with open(out_path, "r", encoding="utf-8") as f:
+                    text = f.read().strip()
+            except OSError as e:
+                print(f"codex output read failed: {e}")
+                return None
+            return text or None
+        finally:
+            try:
+                os.unlink(out_path)
+            except OSError:
+                pass
