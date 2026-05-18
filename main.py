@@ -214,16 +214,32 @@ def main():
             return
         assert core is not None
         summary = core.ask_llm(prompt)
-        result = summary if summary else all_intelligence_data
+        if not summary:
+            # LLM CLI failed or returned empty. The old code fell back to
+            # posting `all_intelligence_data` verbatim, which dumped raw
+            # collector lines ("[Source] Title - Link: URL", "FINNHUB MARKET
+            # NEWS:") to the public channel and polluted last_summary so the
+            # next run's "previous report" context was garbage too. Refuse to
+            # publish without an LLM-formatted digest; notify the operator on
+            # the default chat and leave URL/event dedup state uncommitted so
+            # the next run retries with the same items.
+            print("ask_llm returned no output — skipping digest post (no raw dump)")
+            core.send_tg(
+                "LLM CLI вернул пустой ответ — дайджест пропущен.\n"
+                "Источники собраны, но не закоммичены: следующий запуск повторит попытку.",
+                title="DIGEST FAILURE",
+            )
+            return
+
         # commit_seen + save_summary only after a successful Telegram delivery.
         # If send fails, pending URL marks stay un-persisted so the next run's
         # URL gate sees the same items as un-seen. Note: EventDedup commits
         # are still eager (issue #2 only defers URL marks), so a rerun may
         # still drop items as semantic duplicates — but they won't be
         # silently lost to a stale sent_posts row.
-        if core.send_tg(result, title="WORLD INTEL BRIEF", chat_id=DIGEST_CHAT):
+        if core.send_tg(summary, title="WORLD INTEL BRIEF", chat_id=DIGEST_CHAT):
             collectors.commit_seen()
-            save_summary(result)
+            save_summary(summary)
         else:
             print("send_tg failed — leaving URL marks uncommitted for retry")
 
