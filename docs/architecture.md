@@ -22,6 +22,8 @@ In scope:
 - Filtering already-seen URLs and semantically duplicated events before the LLM
   prompt is built.
 - Calling an installed LLM CLI, preferring Gemini and falling back to Codex.
+- Refusing to publish raw collector output when the LLM layer returns no digest,
+  while notifying the operator and preserving retry state.
 - Formatting Markdown-like LLM output as Telegram-compatible HTML and splitting
   long digests into multiple Telegram messages, including line-bounded splits
   for oversized topic sections.
@@ -70,8 +72,11 @@ SQLite databases, raw collector handoff JSON, and the previous digest text.
   Jaccard overlap, SQLite persistence, TTL cleanup, matching windows, and
   cluster-size guards.
 - `core.py` owns LLM CLI execution and Telegram delivery. It discovers Gemini or
-  Codex from explicit env vars or PATH, converts basic Markdown to Telegram
-  HTML, and falls back to plain text if Telegram rejects HTML.
+  Codex from explicit env vars or PATH, deduplicates resolved binaries, runs
+  Codex through `codex exec --skip-git-repo-check -o <tmpfile> -` so cron can
+  capture the final response without entering the TUI, kills timed-out child
+  processes, converts basic Markdown to Telegram HTML, and falls back to plain
+  text if Telegram rejects HTML.
 - `standalone_reddit_digest.py` is the bundled Reddit fetcher used by
   `Collectors.collect_reddit`.
 - `test_dedup.py` covers headline normalization, token extraction,
@@ -96,16 +101,21 @@ SQLite databases, raw collector handoff JSON, and the previous digest text.
    clusters for non-duplicate titles eagerly during this step.
 6. `main.py` inserts the previous digest and new source data into `VIBE_PROMPT`.
 7. In dry-run mode, the prompt is printed. Otherwise `VibeCore.ask_llm` calls
-   Gemini first and then Codex if Gemini is unavailable or fails.
+   Gemini first and then Codex if Gemini is unavailable or fails. The fallback
+   path is CLI-specific: Gemini reads stdin/stdout directly, while Codex writes
+   its final answer to a temporary output file.
 8. `VibeCore.send_tg` formats the digest, posts it to Telegram, splits it by
    topic section when it exceeds the Telegram message limit, line-splits any
    single oversized section, and returns whether every part was delivered.
-9. On a successful send, `Collectors.commit_seen` persists the pending URL
-   marks to `sent_posts` and the posted text is written to
-   `last_intel_summary.txt` for the next run. On failure, both are skipped so
-   the next run's URL dedup gate sees the same items as un-seen. Semantic
-   dedup state from step 5 is still committed eagerly, so a rerun may still
-   filter the items as event duplicates — deferring semantic-dedup commits
+9. If no LLM-formatted digest is returned, the bot sends an operator failure
+   notice to the default chat and exits without posting raw collector lines or
+   committing URL state.
+10. On a successful digest send, `Collectors.commit_seen` persists the pending
+   URL marks to `sent_posts` and the posted text is written to
+   `last_intel_summary.txt` for the next run. On delivery failure, both are
+   skipped so the next run's URL dedup gate sees the same items as un-seen.
+   Semantic dedup state from step 5 is still committed eagerly, so a rerun may
+   still filter the items as event duplicates — deferring semantic-dedup commits
    is out of scope for this design.
 
 ### Deployment Flow
@@ -136,8 +146,13 @@ host-local responsibilities.
   instead of aborting the run.
 - CLI-based LLM boundary: model authentication and rate-limit handling are
   delegated to installed Gemini or Codex CLIs rather than SDK credentials.
+  Codex is invoked through non-interactive `codex exec`; running bare `codex`
+  is not a valid cron fallback because it opens an interactive interface.
 - Telegram formatting boundary: generated Markdown-like output is transformed to
   Telegram HTML at the edge, with plain-text fallback on delivery errors.
+- Publication safety boundary: the public channel receives only an LLM-formatted
+  digest. Empty LLM output produces an operator alert and leaves pending source
+  URLs available for retry instead of dumping raw collector payloads.
 
 ## Deployment/Operations
 
@@ -158,6 +173,9 @@ cron, or secrets.
   silently produce a smaller prompt unless logs are reviewed.
 - Semantic deduplication depends on an in-process E5 model and local SQLite
   state; the first run is heavy and state loss resets duplicate memory.
+- Semantic event clusters are committed while collectors run, before Telegram
+  delivery. URL marks are deferred until successful send, but an LLM or
+  delivery failure can still leave semantic state ahead of public delivery.
 - HTML formatting uses regular expressions, which can fail on malformed or
   unexpected Markdown from the LLM.
 - Deployment is file-copy based and leaves scheduler, dependency installation,
@@ -169,6 +187,10 @@ No ADR documents are present in this repository as of this review.
 
 ## Freshness
 
-Reviewed on 2026-05-17 against repository evidence in `README.md`, `main.py`,
+Reviewed on 2026-05-19 against repository evidence in `README.md`, `main.py`,
 `collectors.py`, `dedup.py`, `core.py`, `test_dedup.py`, `env.example`,
-`env.deploy.example`, and `Makefile`.
+`env.deploy.example`, and `Makefile`. Current delta captured: LLM fallback now
+uses a cron-safe Codex execution path with temporary-file output, duplicate
+binary suppression, and timeout cleanup; failed or empty LLM output no longer
+publishes raw collector lines; and digest prompt policy now requires each item
+link label to be the publication/source name rather than a generic "Источник".
