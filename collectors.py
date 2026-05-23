@@ -461,13 +461,17 @@ class Collectors:
         return self._fetch_rss(feeds, "GLOBAL NEWS", max_per_feed=3, max_total=10)
 
     def collect_arxiv(self):
-        """ArXiv AI/ML papers RSS."""
+        """ArXiv AI/ML/agents/code papers. cs.MA covers multi-agent systems and
+        cs.CL/cs.SE catch LLM-agent and code-agent papers that don't land in cs.AI."""
         print("Fetching ArXiv AI/ML...")
         feeds = {
             "cs.AI": "http://export.arxiv.org/rss/cs.AI",
             "cs.LG": "http://export.arxiv.org/rss/cs.LG",
+            "cs.MA": "http://export.arxiv.org/rss/cs.MA",
+            "cs.CL": "http://export.arxiv.org/rss/cs.CL",
+            "cs.SE": "http://export.arxiv.org/rss/cs.SE",
         }
-        return self._fetch_rss(feeds, "ARXIV AI/ML PAPERS", max_per_feed=8, max_total=15)
+        return self._fetch_rss(feeds, "ARXIV AI/ML PAPERS", max_per_feed=5, max_total=25)
 
     def collect_tech_news(self):
         """TechCrunch, Ars Technica, Wired, The Verge RSS."""
@@ -803,12 +807,14 @@ class Collectors:
 
     def collect_infra_news(self):
         """Kubernetes, CNCF, AWS, GCP, Azure, Cloudflare, HashiCorp, Datadog,
-        Grafana, Last Week in AWS, CISA — DevOps/SRE/cloud."""
+        Grafana, Last Week in AWS, CISA — DevOps/SRE/cloud. The New Stack +
+        Elastic + AWS DevOps cover the AI-agents-in-infra angle."""
         print("Fetching Infra/DevOps RSS...")
         feeds = {
             "Kubernetes": "https://kubernetes.io/feed.xml",
             "CNCF": "https://www.cncf.io/feed/",
             "AWS News": "https://aws.amazon.com/blogs/aws/feed/",
+            "AWS DevOps": "https://aws.amazon.com/blogs/devops/feed/",
             "Google Cloud": "https://cloudblog.withgoogle.com/rss/",
             "Azure": "https://azure.microsoft.com/blog/feed/",
             "Cloudflare": "https://blog.cloudflare.com/rss/",
@@ -816,20 +822,24 @@ class Collectors:
             "Datadog": "https://www.datadoghq.com/blog/index.xml",
             "Grafana Labs": "https://grafana.com/blog/index.xml",
             "Last Week in AWS": "https://www.lastweekinaws.com/feed/",
+            "The New Stack": "https://thenewstack.io/feed/",
+            "Elastic": "https://www.elastic.co/blog/feed",
             "CISA Alerts": "https://www.cisa.gov/cybersecurity-advisories/all.xml",
         }
-        return self._fetch_rss(feeds, "INFRA / DEVOPS / SRE", max_per_feed=3, max_total=20)
+        return self._fetch_rss(feeds, "INFRA / DEVOPS / SRE", max_per_feed=2, max_total=24)
 
     def collect_security_news(self):
-        """Krebs, The Hacker News, BleepingComputer, Project Zero — CVE/breaches/exploits."""
+        """Krebs, The Hacker News, BleepingComputer, Project Zero, Help Net Security
+        — CVE/breaches/exploits."""
         print("Fetching Security RSS...")
         feeds = {
             "KrebsOnSecurity": "https://krebsonsecurity.com/feed/",
             "The Hacker News": "https://feeds.feedburner.com/TheHackersNews",
             "BleepingComputer": "https://www.bleepingcomputer.com/feed/",
             "Project Zero": "https://googleprojectzero.blogspot.com/feeds/posts/default",
+            "Help Net Security": "https://www.helpnetsecurity.com/feed/",
         }
-        return self._fetch_rss(feeds, "SECURITY", max_per_feed=4, max_total=15)
+        return self._fetch_rss(feeds, "SECURITY", max_per_feed=3, max_total=18)
 
     def collect_nvd_cves(self, hours_back=24, min_score=7.0, max_results=15):
         """NVD CVE feed via JSON API 2.0. Returns CVEs published in the last
