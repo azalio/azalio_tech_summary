@@ -54,6 +54,7 @@ class Collectors:
         # API keys (optional, from env)
         self.finnhub_key = os.environ.get("FINNHUB_API_KEY", "")
         self.newsapi_key = os.environ.get("NEWSAPI_KEY", "")
+        self.nvd_key = os.environ.get("NVD_API_KEY", "")
 
         self._init_db()
         self._cleanup_seen()
@@ -479,6 +480,37 @@ class Collectors:
         }
         return self._fetch_rss(feeds, "TECH NEWS", max_per_feed=5, max_total=20)
 
+    def collect_china_news(self):
+        """Chinese English-language outlets: CGTN, China Daily, SCMP, Global Times."""
+        print("Fetching China News RSS...")
+        feeds = {
+            "CGTN World": "https://www.cgtn.com/subscribe/rss/section/world.xml",
+            "CGTN China": "https://www.cgtn.com/subscribe/rss/section/china.xml",
+            "CGTN Business": "https://www.cgtn.com/subscribe/rss/section/business.xml",
+            "China Daily World": "https://www.chinadaily.com.cn/rss/world_rss.xml",
+            "China Daily China": "https://www.chinadaily.com.cn/rss/china_rss.xml",
+            "SCMP": "https://www.scmp.com/rss/91/feed/",
+            "Global Times": "https://www.globaltimes.cn/rss/outbrain.xml",
+        }
+        return self._fetch_rss(feeds, "CHINA NEWS", max_per_feed=3, max_total=12)
+
+    def collect_china_tech(self):
+        """Chinese tech media — English (CGTN Tech, SCMP Tech, Pandaily, TechNode) and
+        zh-language (36Kr, IT之家, 少数派, 雷锋网). Non-English titles get passed to
+        the LLM which handles translation in the digest step."""
+        print("Fetching China Tech RSS...")
+        feeds = {
+            "CGTN Tech": "https://www.cgtn.com/subscribe/rss/section/tech-sci.xml",
+            "SCMP Tech": "https://www.scmp.com/rss/36/feed/",
+            "Pandaily": "https://pandaily.com/feed/",
+            "TechNode": "https://technode.com/feed/",
+            "36Kr": "https://36kr.com/feed",
+            "ITHome": "https://www.ithome.com/rss/",
+            "Sspai": "https://sspai.com/feed",
+            "LeiPhone": "https://www.leiphone.com/feed/",
+        }
+        return self._fetch_rss(feeds, "CHINA TECH", max_per_feed=3, max_total=12)
+
     def collect_google_news(self):
         """Google News RSS for targeted topics."""
         print("Fetching Google News RSS...")
@@ -770,16 +802,131 @@ class Collectors:
         return content if count > 0 else ""
 
     def collect_infra_news(self):
-        """Kubernetes, CNCF, AWS, Cloudflare, CISA RSS for DevOps/SRE."""
+        """Kubernetes, CNCF, AWS, GCP, Azure, Cloudflare, HashiCorp, Datadog,
+        Grafana, Last Week in AWS, CISA — DevOps/SRE/cloud."""
         print("Fetching Infra/DevOps RSS...")
         feeds = {
             "Kubernetes": "https://kubernetes.io/feed.xml",
             "CNCF": "https://www.cncf.io/feed/",
             "AWS News": "https://aws.amazon.com/blogs/aws/feed/",
+            "Google Cloud": "https://cloudblog.withgoogle.com/rss/",
+            "Azure": "https://azure.microsoft.com/blog/feed/",
             "Cloudflare": "https://blog.cloudflare.com/rss/",
+            "HashiCorp": "https://www.hashicorp.com/blog/feed.xml",
+            "Datadog": "https://www.datadoghq.com/blog/index.xml",
+            "Grafana Labs": "https://grafana.com/blog/index.xml",
+            "Last Week in AWS": "https://www.lastweekinaws.com/feed/",
             "CISA Alerts": "https://www.cisa.gov/cybersecurity-advisories/all.xml",
         }
-        return self._fetch_rss(feeds, "INFRA / DEVOPS / SRE", max_per_feed=3, max_total=12)
+        return self._fetch_rss(feeds, "INFRA / DEVOPS / SRE", max_per_feed=3, max_total=20)
+
+    def collect_security_news(self):
+        """Krebs, The Hacker News, BleepingComputer, Project Zero — CVE/breaches/exploits."""
+        print("Fetching Security RSS...")
+        feeds = {
+            "KrebsOnSecurity": "https://krebsonsecurity.com/feed/",
+            "The Hacker News": "https://feeds.feedburner.com/TheHackersNews",
+            "BleepingComputer": "https://www.bleepingcomputer.com/feed/",
+            "Project Zero": "https://googleprojectzero.blogspot.com/feeds/posts/default",
+        }
+        return self._fetch_rss(feeds, "SECURITY", max_per_feed=4, max_total=15)
+
+    def collect_nvd_cves(self, hours_back=24, min_score=7.0, max_results=15):
+        """NVD CVE feed via JSON API 2.0. Returns CVEs published in the last
+        `hours_back` hours with CVSS baseScore >= min_score (HIGH/CRITICAL).
+        NVD_API_KEY env raises the rate limit from 5 to 50 req/30s."""
+        print("Fetching NVD CVEs...")
+        from datetime import datetime, timedelta, timezone
+        now = datetime.now(timezone.utc)
+        start = now - timedelta(hours=hours_back)
+        # NVD wants ISO 8601 without timezone suffix; millisecond precision.
+        fmt = "%Y-%m-%dT%H:%M:%S.000"
+        params = {
+            "pubStartDate": start.strftime(fmt),
+            "pubEndDate": now.strftime(fmt),
+            "resultsPerPage": 2000,
+        }
+        headers = {"User-Agent": "azalio-tech-summary/1.0"}
+        if self.nvd_key:
+            headers["apiKey"] = self.nvd_key
+        try:
+            resp = requests.get(
+                "https://services.nvd.nist.gov/rest/json/cves/2.0",
+                params=params,
+                headers=headers,
+                timeout=30,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+        except Exception as e:
+            print(f"  NVD error: {e}")
+            return ""
+
+        items = []
+        for v in data.get("vulnerabilities", []):
+            cve = v.get("cve", {})
+            cve_id = cve.get("id", "")
+            if not cve_id:
+                continue
+            # Description: first English entry.
+            desc = ""
+            for d in cve.get("descriptions", []):
+                if d.get("lang") == "en":
+                    desc = d.get("value", "").strip()
+                    break
+            # CVSS: prefer v4.0 → v3.1 → v3.0 → v2 (most recent metric standard wins).
+            score = 0.0
+            severity = ""
+            metrics = cve.get("metrics", {})
+            for key in ("cvssMetricV40", "cvssMetricV31", "cvssMetricV30", "cvssMetricV2"):
+                entries = metrics.get(key) or []
+                if not entries:
+                    continue
+                cvss = entries[0].get("cvssData", {})
+                score = cvss.get("baseScore", 0.0)
+                # v2 puts severity at the entry level; v3+ inside cvssData.
+                severity = cvss.get("baseSeverity") or entries[0].get("baseSeverity", "")
+                break
+            if score < min_score:
+                continue
+            url = f"https://nvd.nist.gov/vuln/detail/{cve_id}"
+            items.append({
+                "id": cve_id,
+                "score": score,
+                "severity": severity,
+                "desc": desc,
+                "url": url,
+            })
+
+        # Sort by severity descending so the LLM sees the worst ones first.
+        items.sort(key=lambda x: x["score"], reverse=True)
+
+        content = f"NVD CVEs (last {hours_back}h, CVSS>={min_score}):\n"
+        count = 0
+        for it in items:
+            if count >= max_results:
+                break
+            if self._is_seen(it["url"]):
+                continue
+            self._mark_seen(it["url"], "NVD")
+            title = f"{it['id']} (CVSS {it['score']} {it['severity']})"
+            if self._is_semantic_dup(title, "NVD", it["url"], it["desc"]):
+                continue
+            short_desc = it["desc"][:400].strip()
+            content += f"- [{it['id']}] CVSS {it['score']} {it['severity']} — {short_desc} - Link: {it['url']}\n"
+            count += 1
+        return content if count > 0 else ""
+
+    def collect_ai_labs(self):
+        """Official lab blogs: OpenAI, DeepMind, Meta Engineering, Simon Willison."""
+        print("Fetching AI labs RSS...")
+        feeds = {
+            "OpenAI": "https://openai.com/news/rss.xml",
+            "DeepMind": "https://deepmind.google/blog/rss.xml",
+            "Meta Engineering": "https://engineering.fb.com/feed/",
+            "Simon Willison": "https://simonwillison.net/atom/everything/",
+        }
+        return self._fetch_rss(feeds, "AI LABS", max_per_feed=3, max_total=12)
 
     def collect_finnhub(self):
         """Finnhub market news (needs FINNHUB_API_KEY env var)."""

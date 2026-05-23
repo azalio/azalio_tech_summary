@@ -171,6 +171,10 @@ def main():
     if hn: all_intelligence_data += "\n" + hn
     global_news = collectors.collect_global_news()
     if global_news: all_intelligence_data += "\n" + global_news
+    china_news = collectors.collect_china_news()
+    if china_news: all_intelligence_data += "\n" + china_news
+    china_tech = collectors.collect_china_tech()
+    if china_tech: all_intelligence_data += "\n" + china_tech
     arxiv = collectors.collect_arxiv()
     if arxiv: all_intelligence_data += "\n" + arxiv
     tech = collectors.collect_tech_news()
@@ -181,6 +185,12 @@ def main():
     if science: all_intelligence_data += "\n" + science
     infra = collectors.collect_infra_news()
     if infra: all_intelligence_data += "\n" + infra
+    security = collectors.collect_security_news()
+    if security: all_intelligence_data += "\n" + security
+    nvd = collectors.collect_nvd_cves()
+    if nvd: all_intelligence_data += "\n" + nvd
+    ai_labs = collectors.collect_ai_labs()
+    if ai_labs: all_intelligence_data += "\n" + ai_labs
     newsapi = collectors.collect_newsapi()
     if newsapi: all_intelligence_data += "\n" + newsapi
     finnhub = collectors.collect_finnhub()
