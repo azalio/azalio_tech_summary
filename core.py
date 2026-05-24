@@ -83,6 +83,21 @@ class VibeCore:
             chunks.append("\n".join(current))
         return chunks
 
+    def _channel_footer(self, chat_id):
+        """Footer with a t.me link to the target channel.
+
+        Appended to every split message so a forwarded fragment still shows
+        where it came from. Returns '' for non-public targets (numeric IDs,
+        private chats) where t.me URLs don't resolve.
+        """
+        if not chat_id:
+            return ""
+        s = str(chat_id)
+        if not s.startswith("@"):
+            return ""
+        handle = s.lstrip("@")
+        return f'\n\n—\n📡 <a href="https://t.me/{handle}">@{handle}</a>'
+
     def _send_one(self, url, text, chat_id=None):
         """Send one message, fallback to plain text if HTML fails.
 
@@ -154,25 +169,29 @@ class VibeCore:
         formatted_content = self.format_to_html(clean_text)
         header = f"⚡️ <b>{title}</b>\n\n"
         full_text = header + formatted_content
+        footer = self._channel_footer(target_chat)
+        # Reserve room for the footer in every split message so a shared
+        # fragment still shows where it came from.
+        effective_limit = self.TG_LIMIT - len(footer)
 
-        print(f"Sending to Telegram ({len(full_text)} chars) to {target_chat}...")
+        print(f"Sending to Telegram ({len(full_text) + len(footer)} chars) to {target_chat}...")
 
-        if len(full_text) <= self.TG_LIMIT:
-            return self._send_one(url, full_text, chat_id=target_chat)
+        if len(full_text) <= effective_limit:
+            return self._send_one(url, full_text + footer, chat_id=target_chat)
 
         # Split by topic sections and group into messages
         sections = self._split_by_sections(formatted_content)
         if not sections:
             # No sections found, hard split as last resort
             all_ok = True
-            for i in range(0, len(full_text), self.TG_LIMIT):
-                if not self._send_one(url, full_text[i:i + self.TG_LIMIT], chat_id=target_chat):
+            for i in range(0, len(full_text), effective_limit):
+                if not self._send_one(url, full_text[i:i + effective_limit] + footer, chat_id=target_chat):
                     all_ok = False
             return all_ok
 
         # Pre-expand: any single section longer than what fits with the header
         # gets line-split here so the grouping loop below stays simple.
-        section_budget = self.TG_LIMIT - len(header)
+        section_budget = effective_limit - len(header)
         expanded = []
         for section in sections:
             if len(section) > section_budget:
@@ -185,7 +204,7 @@ class VibeCore:
         current = header
         for section in sections:
             # If adding this section exceeds limit, flush current message
-            if len(current) + len(section) + 2 > self.TG_LIMIT:
+            if len(current) + len(section) + 2 > effective_limit:
                 if current.strip():
                     messages.append(current.strip())
                 current = section + "\n\n"
@@ -197,8 +216,8 @@ class VibeCore:
         print(f"  Split into {len(messages)} messages")
         all_ok = True
         for i, msg in enumerate(messages):
-            print(f"  Sending part {i+1}/{len(messages)} ({len(msg)} chars)...")
-            if not self._send_one(url, msg, chat_id=target_chat):
+            print(f"  Sending part {i+1}/{len(messages)} ({len(msg) + len(footer)} chars)...")
+            if not self._send_one(url, msg + footer, chat_id=target_chat):
                 all_ok = False
         return all_ok
 
