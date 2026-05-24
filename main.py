@@ -191,6 +191,8 @@ def main():
     if nvd: all_intelligence_data += "\n" + nvd
     ai_labs = collectors.collect_ai_labs()
     if ai_labs: all_intelligence_data += "\n" + ai_labs
+    eng_curated = collectors.collect_eng_curated()
+    if eng_curated: all_intelligence_data += "\n" + eng_curated
     newsapi = collectors.collect_newsapi()
     if newsapi: all_intelligence_data += "\n" + newsapi
     finnhub = collectors.collect_finnhub()

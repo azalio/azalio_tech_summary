@@ -808,7 +808,9 @@ class Collectors:
     def collect_infra_news(self):
         """Kubernetes, CNCF, AWS, GCP, Azure, Cloudflare, HashiCorp, Datadog,
         Grafana, Last Week in AWS, CISA — DevOps/SRE/cloud. The New Stack +
-        Elastic + AWS DevOps cover the AI-agents-in-infra angle."""
+        Elastic + AWS DevOps cover the AI-agents-in-infra angle. GitHub Blog
+        catches platform changes (Copilot/Actions/GHAS) and Netflix Tech Blog
+        feeds in distributed-systems / observability deep-dives."""
         print("Fetching Infra/DevOps RSS...")
         feeds = {
             "Kubernetes": "https://kubernetes.io/feed.xml",
@@ -824,9 +826,11 @@ class Collectors:
             "Last Week in AWS": "https://www.lastweekinaws.com/feed/",
             "The New Stack": "https://thenewstack.io/feed/",
             "Elastic": "https://www.elastic.co/blog/feed",
+            "GitHub Blog": "https://github.blog/feed/",
+            "Netflix Tech": "https://netflixtechblog.com/feed",
             "CISA Alerts": "https://www.cisa.gov/cybersecurity-advisories/all.xml",
         }
-        return self._fetch_rss(feeds, "INFRA / DEVOPS / SRE", max_per_feed=2, max_total=24)
+        return self._fetch_rss(feeds, "INFRA / DEVOPS / SRE", max_per_feed=2, max_total=26)
 
     def collect_security_news(self):
         """Krebs, The Hacker News, BleepingComputer, Project Zero, Help Net Security
@@ -928,15 +932,30 @@ class Collectors:
         return content if count > 0 else ""
 
     def collect_ai_labs(self):
-        """Official lab blogs: OpenAI, DeepMind, Meta Engineering, Simon Willison."""
+        """Official lab blogs (OpenAI, DeepMind, Meta) and individual high-signal
+        AI writers (Willison, Raschka, Karpathy)."""
         print("Fetching AI labs RSS...")
         feeds = {
             "OpenAI": "https://openai.com/news/rss.xml",
             "DeepMind": "https://deepmind.google/blog/rss.xml",
             "Meta Engineering": "https://engineering.fb.com/feed/",
             "Simon Willison": "https://simonwillison.net/atom/everything/",
+            "Sebastian Raschka": "https://sebastianraschka.com/rss_feed.xml",
+            "Karpathy": "https://karpathy.github.io/feed.xml",
         }
-        return self._fetch_rss(feeds, "AI LABS", max_per_feed=3, max_total=12)
+        return self._fetch_rss(feeds, "AI LABS", max_per_feed=3, max_total=16)
+
+    def collect_eng_curated(self):
+        """Community-curated and individual-curator engineering signal.
+        Lobsters is HN-adjacent but smaller and more infra/security-skewed.
+        The Pragmatic Engineer (Gergely Orosz) is weekly engineering-org +
+        industry analysis."""
+        print("Fetching Engineering curated RSS...")
+        feeds = {
+            "Lobsters": "https://lobste.rs/rss",
+            "Pragmatic Engineer": "https://newsletter.pragmaticengineer.com/feed",
+        }
+        return self._fetch_rss(feeds, "ENGINEERING CURATED", max_per_feed=5, max_total=10)
 
     def collect_finnhub(self):
         """Finnhub market news (needs FINNHUB_API_KEY env var)."""
