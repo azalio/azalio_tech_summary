@@ -18,20 +18,24 @@ DEPLOY_FILES := main.py core.py collectors.py dedup.py \
 BACKUP_DIR ?= backups
 BACKUP_FILE := $(BACKUP_DIR)/$(shell date +%F).tgz
 
-.PHONY: help install test deploy backup restore lint
+.PHONY: help install test deploy install-cron install-logrotate backup restore lint
 
 help:
 	@echo 'Targets:'
-	@echo '  make install       Install Python deps locally'
-	@echo '  make test          Run unit tests (needs E5 model on first run)'
-	@echo '  make deploy        scp source files to $$SSH_TARGET:$$REMOTE_DIR'
-	@echo '  make backup        snapshot .env + workspace from $$SSH_TARGET to $$BACKUP_FILE'
-	@echo '  make restore       restore $$BACKUP onto $$SSH_TARGET:$$REMOTE_DIR'
-	@echo '                     Configure SSH_JUMP/SSH_TARGET/REMOTE_DIR in .env.deploy'
-	@echo '                     (copy env.deploy.example) or pass them inline.'
+	@echo '  make install            Install Python deps locally'
+	@echo '  make test               Run unit tests (needs E5 model on first run)'
+	@echo '  make deploy             scp source files to $$SSH_TARGET:$$REMOTE_DIR'
+	@echo '  make install-cron       install/refresh cron entries on $$SSH_TARGET'
+	@echo '  make install-logrotate  install /etc/logrotate.d/azalio-tech-summary on $$SSH_TARGET (uses sudo)'
+	@echo '  make backup             snapshot .env + workspace from $$SSH_TARGET to $$BACKUP_FILE'
+	@echo '  make restore            restore $$BACKUP onto $$SSH_TARGET:$$REMOTE_DIR'
+	@echo '                          Configure SSH_JUMP/SSH_TARGET/REMOTE_DIR in .env.deploy'
+	@echo '                          (copy env.deploy.example) or pass them inline.'
 	@echo ''
 	@echo 'Example (with .env.deploy in place):'
 	@echo '  make deploy'
+	@echo '  make install-cron'
+	@echo '  make install-logrotate'
 	@echo '  make backup'
 	@echo '  BACKUP=backups/YYYY-MM-DD.tgz make restore'
 
@@ -46,6 +50,16 @@ deploy:
 	ssh $(SSH_OPTS) $(SSH_TARGET) "mkdir -p $(REMOTE_DIR)"
 	scp $(SSH_OPTS) $(DEPLOY_FILES) $(SSH_TARGET):$(REMOTE_DIR)/
 	@echo 'Done. Make sure .env exists on the server.'
+
+install-cron:
+	@echo "Installing cron entries on $(SSH_TARGET) for $(REMOTE_DIR)..."
+	scp $(SSH_OPTS) deploy/install-cron.sh $(SSH_TARGET):/tmp/install-cron.sh
+	ssh $(SSH_OPTS) $(SSH_TARGET) "bash /tmp/install-cron.sh $(REMOTE_DIR) && rm /tmp/install-cron.sh"
+
+install-logrotate:
+	@echo "Installing logrotate config on $(SSH_TARGET) for $(REMOTE_DIR) (uses sudo)..."
+	scp $(SSH_OPTS) deploy/install-logrotate.sh $(SSH_TARGET):/tmp/install-logrotate.sh
+	ssh $(SSH_OPTS) $(SSH_TARGET) "bash /tmp/install-logrotate.sh $(REMOTE_DIR) && rm /tmp/install-logrotate.sh"
 
 backup:
 	@mkdir -p $(BACKUP_DIR)

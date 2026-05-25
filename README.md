@@ -124,11 +124,28 @@ The first run downloads the multilingual E5 model (~470 MB) into the HuggingFace
 
 ### Cron (hourly)
 
+After `make deploy`, install the schedule on the server:
+
+```bash
+make install-cron
+```
+
+This writes two managed entries to the deploy user's crontab (bracketed by `# BEGIN/# END azalio-tech-summary` markers so re-running is idempotent):
+
 ```cron
-15 * * * * cd /home/you/azalio_tech_summary && .venv/bin/python main.py >> /var/log/azalio_tech_summary.log 2>&1
+15 * * * * cd $REMOTE_DIR && .venv/bin/python main.py                       >> $REMOTE_DIR/main.log   2>&1
+25 * * * * cd $REMOTE_DIR && .venv/bin/python standalone_reddit_digest.py   >> $REMOTE_DIR/reddit.log 2>&1
 ```
 
 Cron has a minimal `$PATH`, so the LLM CLI may not be found by name. Pin it via `GEMINI_BIN` (or `CODEX_BIN`) inside `.env`, or prepend the directory to the cron line's `PATH`.
+
+### Log rotation
+
+```bash
+make install-logrotate
+```
+
+Drops `/etc/logrotate.d/azalio-tech-summary` (needs `sudo` on the target) — weekly rotation, 4 generations kept, gzip from generation 2. Covers both `main.log` and `reddit.log`.
 
 ### Deploy to a remote server
 
