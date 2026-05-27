@@ -3,11 +3,12 @@
 ## Overview
 
 `azalio_tech_summary` is a personal hourly technology-news digest bot. It
-collects candidate headlines from RSS feeds, REST APIs, Reddit, Hacker News,
-Habr, GitHub Trending, HuggingFace Daily Papers, arXiv, and optional external
-collector scripts. It removes repeated stories with URL and semantic event
-deduplication, asks an LLM CLI to write a compact Russian digest, and posts the
-result to Telegram.
+collects candidate headlines from RSS feeds, REST APIs, Reddit, Telegram
+channels, Hacker News, Habr, GitHub Trending, HuggingFace Daily Papers, arXiv,
+Claude release notes, NVD/CISA/security feeds, Google News, and optional
+external collector scripts. It removes repeated stories with URL and semantic
+event deduplication, asks an LLM CLI to write a compact Russian digest, and
+posts the result to Telegram.
 
 The repository is intentionally small: the production path is a single Python
 process started from `main.py`, with persistent local state under
@@ -17,8 +18,8 @@ process started from `main.py`, with persistent local state under
 
 In scope:
 
-- Collecting tech, AI/ML, security, science, finance, and global-news items
-  from configured public sources.
+- Collecting tech, AI/ML, security, science, finance, channel, release-note,
+  and global-news items from configured public sources.
 - Filtering already-seen URLs and semantically duplicated events before the LLM
   prompt is built.
 - Calling an installed LLM CLI, preferring Gemini and falling back to Codex.
@@ -28,6 +29,8 @@ In scope:
   long digests into multiple Telegram messages, including line-bounded splits
   for oversized topic sections.
 - Deploying the source files to a single remote host via `make deploy`.
+- Installing idempotent remote cron entries and logrotate configuration.
+- Snapshotting and restoring remote `.env` plus workspace state.
 
 Out of scope:
 
@@ -66,7 +69,8 @@ SQLite databases, raw collector handoff JSON, and the previous digest text.
   LLM through `VibeCore`, posts the result, and stores the latest summary.
 - `collectors.py` owns source integrations. It contains RSS helpers, URL
   normalization, `sent_posts` URL deduplication, optional API-key collectors,
-  and source-specific formatting for the prompt payload.
+  source-specific formatting for the prompt payload, and handoff points for
+  bundled Reddit/Telegram fetcher subprocesses.
 - `dedup.py` owns semantic event clustering. It uses
   `intfloat/multilingual-e5-small` embeddings, token extraction, entity aliasing,
   Jaccard overlap, SQLite persistence, TTL cleanup, matching windows, and
@@ -79,10 +83,15 @@ SQLite databases, raw collector handoff JSON, and the previous digest text.
   text if Telegram rejects HTML.
 - `standalone_reddit_digest.py` is the bundled Reddit fetcher used by
   `Collectors.collect_reddit`.
+- `standalone_telegram_digest.py` is the optional Telethon collector for
+  configured Telegram channels.
+- `deploy/install-cron.sh` and `deploy/install-logrotate.sh` install the
+  remote scheduler and log rotation entries used by `Makefile` targets.
 - `test_dedup.py` covers headline normalization, token extraction,
   canonicalization, event clustering behavior, TTL handling, and collector
   recap filtering.
-- `Makefile` provides `install`, `test`, and `deploy` targets.
+- `Makefile` provides install, test, deploy, cron/logrotate, backup, and
+  restore targets.
 
 ## Runtime Flows
 
@@ -94,7 +103,8 @@ SQLite databases, raw collector handoff JSON, and the previous digest text.
 3. `Collectors` opens or creates `memory/reddit_sent.db` and removes URL entries
    older than the configured TTL.
 4. Each collector returns formatted source lines or an empty string. Optional
-   collectors skip themselves when their API key or external script is missing.
+   collectors skip themselves when their API key, Telegram auth, or external
+   script is missing.
 5. URL deduplication queues normalized links in an in-memory pending set;
    they are not written to `sent_posts` until the digest is successfully
    posted (see step 9). Semantic deduplication creates or updates event
@@ -123,8 +133,15 @@ SQLite databases, raw collector handoff JSON, and the previous digest text.
 `make deploy` reads optional host settings from `.env.deploy`, supports direct
 SSH or a bastion via `SSH_JUMP`, creates the target directory over SSH, and
 copies the Python source files, tests, and `requirements.txt` with `scp`.
-Runtime `.env`, workspace state, virtualenv setup, and scheduler setup remain
-host-local responsibilities.
+Runtime `.env`, workspace state, and virtualenv setup remain host-local
+responsibilities.
+
+`make install-cron` uploads `deploy/install-cron.sh` and writes managed hourly
+cron entries for `main.py` and `standalone_reddit_digest.py`. `make
+install-logrotate` uploads `deploy/install-logrotate.sh` and installs weekly
+rotation for `main.log` and `reddit.log`. `make backup` snapshots remote
+`.env` plus `workspace/`; `make restore BACKUP=...` extracts that archive onto
+the target before the next run.
 
 ## Source of Truth
 
@@ -134,13 +151,15 @@ host-local responsibilities.
 - Telegram and LLM CLI integration: `core.py`.
 - Required and optional runtime configuration: `env.example`.
 - Setup, deployment, and operational notes: `README.md`.
+- Remote scheduler/log rotation behavior: `deploy/install-cron.sh`,
+  `deploy/install-logrotate.sh`, and `Makefile`.
 
 ## Cross-cutting Concepts
 
 - Two-stage deduplication: normalized URL history catches exact repeats, while
   event clusters catch semantically repeated stories across sources.
 - Local state: all runtime memory is file-backed under `VIBE_WORKSPACE`, mostly
-  through SQLite plus the previous digest text file.
+  through SQLite plus previous digest text and fetcher handoff JSON files.
 - Graceful degradation: missing optional API keys, missing optional scripts, and
   individual source fetch failures usually return an empty collector result
   instead of aborting the run.
@@ -163,7 +182,9 @@ model into the HuggingFace cache.
 
 `make test` runs the focused deduplication test suite. `make deploy` copies
 source files to a remote server but does not provision `.env`, system packages,
-cron, or secrets.
+virtualenvs, or secrets. `make install-cron` and `make install-logrotate`
+install the scheduler/log retention pieces after deploy. `make backup` and
+`make restore` protect the non-Git state needed for a fresh VM.
 
 ## Known Risks/Gaps
 
@@ -178,8 +199,8 @@ cron, or secrets.
   delivery failure can still leave semantic state ahead of public delivery.
 - HTML formatting uses regular expressions, which can fail on malformed or
   unexpected Markdown from the LLM.
-- Deployment is file-copy based and leaves scheduler, dependency installation,
-  secrets, virtualenv creation, and rollback mechanics outside the repository.
+- Deployment is file-copy based and leaves dependency installation, secrets,
+  virtualenv creation, and rollback mechanics outside the repository.
 
 ## ADR Links
 
@@ -187,10 +208,14 @@ No ADR documents are present in this repository as of this review.
 
 ## Freshness
 
-Reviewed on 2026-05-19 against repository evidence in `README.md`, `main.py`,
-`collectors.py`, `dedup.py`, `core.py`, `test_dedup.py`, `env.example`,
-`env.deploy.example`, and `Makefile`. Current delta captured: LLM fallback now
-uses a cron-safe Codex execution path with temporary-file output, duplicate
-binary suppression, and timeout cleanup; failed or empty LLM output no longer
-publishes raw collector lines; and digest prompt policy now requires each item
-link label to be the publication/source name rather than a generic "Источник".
+Reviewed on 2026-05-27 against repository evidence in `README.md`, `main.py`,
+`collectors.py`, `dedup.py`, `core.py`, `standalone_reddit_digest.py`,
+`standalone_telegram_digest.py`, `test_dedup.py`, `env.example`,
+`env.deploy.example`, `Makefile`, `deploy/install-cron.sh`, and
+`deploy/install-logrotate.sh`.
+
+Current delta captured: source coverage now includes Telegram channels, Claude
+release notes, GitHub Trending README snippets, broader arXiv/security/cloud
+feeds, and NVD/CISA-style security sources; each digest message appends a
+channel footer; deploy operations now include managed cron, logrotate,
+backup, and restore targets.
