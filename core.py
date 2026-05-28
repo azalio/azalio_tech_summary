@@ -239,9 +239,11 @@ class VibeCore:
         env["PATH"] = ":".join(extra_paths + [env.get("PATH", "")])
 
         # Each entry: (name, path hints, runner). Runner returns clean text or None.
+        # Prefer Codex: on the production host Gemini often hangs until timeout,
+        # while Codex has a cron-safe final-output path through `-o`.
         candidates = [
-            ("gemini", [os.environ.get("GEMINI_BIN", ""), "gemini"], self._run_gemini),
             ("codex", [os.environ.get("CODEX_BIN", ""), "codex"], self._run_codex),
+            ("gemini", [os.environ.get("GEMINI_BIN", ""), "gemini"], self._run_gemini),
         ]
 
         # Dedupe by resolved binary: env-var + PATH lookup often point at the

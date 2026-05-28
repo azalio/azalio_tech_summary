@@ -172,6 +172,24 @@ class TestEventDedupBasic:
         assert stats["duplicates"] == 1
         assert stats["added"] == 2
 
+    def test_event_signals_report_multi_source_burst(self, dedup):
+        dedup.check_and_add("Anthropic releases Claude Opus 4.8", "Telegram:@testingcatalog", "http://a.com")
+        dedup.check_and_add("Anthropic releases Claude Opus 4.8", "ClaudePlatform", "http://b.com")
+        dedup.check_and_add("Anthropic releases Claude Opus 4.8", "Telegram:@dofh_ru", "http://c.com")
+
+        signals = dedup.event_signals()
+
+        assert len(signals) == 1
+        assert signals[0]["title"] == "Anthropic releases Claude Opus 4.8"
+        assert signals[0]["observations"] == 3
+        assert signals[0]["source_count"] == 3
+        assert signals[0]["source_burst"] == "high"
+        assert signals[0]["sources"] == [
+            "ClaudePlatform",
+            "Telegram:@dofh_ru",
+            "Telegram:@testingcatalog",
+        ]
+
 
 class TestTieredGate:
     def test_high_similarity_no_jaccard_needed(self, dedup):
@@ -588,6 +606,42 @@ class TestRecapFilter:
         ]
         for title in regular:
             assert c._is_semantic_dup(title, "src", "http://x.com") is False, f"false positive: {title!r}"
+
+
+class TestEventSignalPrompt:
+    def test_format_event_signals_for_prompt(self):
+        from main import format_event_signals
+
+        text = format_event_signals([
+            {
+                "cluster_id": 42,
+                "title": "Anthropic releases Claude Opus 4.8",
+                "observations": 5,
+                "source_count": 3,
+                "source_burst": "high",
+                "sources": ["ClaudePlatform", "Telegram:@testingcatalog"],
+            }
+        ])
+
+        assert "event_id=42" in text
+        assert "source_burst=high" in text
+        assert "observations=5" in text
+        assert "source_count=3" in text
+        assert "ranking_signal_only" in text
+        assert "Anthropic releases Claude Opus 4.8" in text
+
+
+class TestRussianStylePrompt:
+    def test_prompt_requires_russian_technical_prose(self):
+        from main import VIBE_PROMPT
+
+        assert "РУССКИЙ ТЕХНИЧЕСКИЙ СТИЛЬ" in VIBE_PROMPT
+        assert "необоснованные английские словосочетания" in VIBE_PROMPT
+        assert "clean-room open implementation" in VIBE_PROMPT
+        assert "независимая открытая реализация" in VIBE_PROMPT
+        assert "agent workloads" in VIBE_PROMPT
+        assert "нагрузки AI-агентов" in VIBE_PROMPT
+        assert "оставляй в оригинале только" in VIBE_PROMPT
 
 
 class TestCisaScenario:

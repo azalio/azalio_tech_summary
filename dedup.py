@@ -178,6 +178,8 @@ class EventDedup:
         # Load active clusters into memory
         self._clusters = self._load_clusters()
         self._stats = {"checked": 0, "duplicates": 0, "added": 0}
+        self._run_cluster_hits = {}
+        self._run_cluster_sources = {}
 
     # ── DB schema ────────────────────────────────────────────────────
 
@@ -303,6 +305,11 @@ class EventDedup:
         )
         self._conn.commit()
 
+    def _mark_touched(self, cluster: dict, source: str):
+        cluster_id = cluster["id"]
+        self._run_cluster_hits[cluster_id] = self._run_cluster_hits.get(cluster_id, 0) + 1
+        self._run_cluster_sources.setdefault(cluster_id, set()).add(source or "unknown")
+
     # ── Encoding ─────────────────────────────────────────────────────
 
     def _encode(self, text: str) -> np.ndarray:
@@ -392,6 +399,7 @@ class EventDedup:
                 cluster["id"], cluster["title"][:80],
             )
             self._add_to_cluster(cluster, title, vec, title_tokens, ts)
+            self._mark_touched(cluster, source)
 
             if self.dry_run:
                 return True
@@ -400,8 +408,50 @@ class EventDedup:
         # New event
         cluster = self._create_cluster(title, vec, title_tokens, ts)
         self._save_item(cluster["id"], title, source, url, vec, title_tokens, ts)
+        self._mark_touched(cluster, source)
         self._stats["added"] += 1
         return True
+
+    def event_signals(self, min_observations: int = 2, max_events: int = 12) -> list:
+        """Return source-burst signals from clusters touched in this process.
+
+        Observations are current-run collector hits. cumulative_item_count is
+        the persisted cluster count, useful context for clusters first seen in
+        earlier runs and touched again now.
+        """
+        clusters_by_id = {cluster["id"]: cluster for cluster in self._clusters}
+        signals = []
+        for cluster_id, observations in self._run_cluster_hits.items():
+            sources = sorted(self._run_cluster_sources.get(cluster_id, set()))
+            source_count = len(sources)
+            if observations < min_observations and source_count < min_observations:
+                continue
+            cluster = clusters_by_id.get(cluster_id)
+            if not cluster:
+                continue
+            source_burst = "high" if observations >= 3 or source_count >= 3 else "medium"
+            signals.append({
+                "cluster_id": cluster_id,
+                "title": cluster["title"],
+                "observations": observations,
+                "source_count": source_count,
+                "sources": sources,
+                "cumulative_item_count": cluster["count"],
+                "source_burst": source_burst,
+                "first_seen": cluster["first_seen"],
+                "last_seen": cluster["last_seen"],
+            })
+
+        signals.sort(
+            key=lambda signal: (
+                signal["source_burst"] == "high",
+                signal["observations"],
+                signal["source_count"],
+                signal["cumulative_item_count"],
+            ),
+            reverse=True,
+        )
+        return signals[:max_events]
 
     def stats(self) -> dict:
         total_clusters = len(self._clusters)
