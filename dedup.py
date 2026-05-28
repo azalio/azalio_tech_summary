@@ -82,10 +82,13 @@ _STOPWORDS = frozenset({
     'says', 'new', 'report', 'news', 'update', 'how', 'why', 'what',
     'not', 'but', 'will', 'can', 'could', 'would', 'been', 'have',
     'had', 'than', 'more', 'over', 'into', 'about', 'also', 'may',
+    'said', 'their', 'within',
     'и', 'в', 'на', 'с', 'по', 'после', 'из', 'для', 'что', 'как',
     'это', 'был', 'была', 'его', 'она', 'все', 'при', 'так', 'уже',
     'не', 'но', 'или', 'то', 'за', 'до', 'об', 'от', 'же', 'ещё',
 })
+
+_SHORT_TOKENS = frozenset({'ai', 'ml'})
 
 _ENTITY_ALIASES = {
     'france': {'france', 'french', 'франция', 'французский', 'французского', 'французском'},
@@ -120,7 +123,11 @@ for _canon, _aliases in _ENTITY_ALIASES.items():
 
 def extract_tokens(text: str) -> set:
     words = re.findall(r"[a-zA-Zа-яА-ЯёЁ0-9][a-zA-Zа-яА-ЯёЁ0-9\-']+", text.lower())
-    return {w for w in words if w not in _STOPWORDS and len(w) >= 3}
+    normalized = {w[:-2] if w.endswith("'s") else w for w in words}
+    return {
+        w for w in normalized
+        if w not in _STOPWORDS and (len(w) >= 3 or w in _SHORT_TOKENS)
+    }
 
 
 def canonicalize(tokens: set) -> set:

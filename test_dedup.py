@@ -105,8 +105,14 @@ class TestExtractTokens:
         assert "is" not in tokens
         assert "ok" not in tokens
         assert "GPT" not in tokens  # lowercase "gpt" — 3 chars, in set
+        assert "ai" in tokens
         # "works" should be present
         assert "works" in tokens
+
+    def test_strips_english_possessive(self):
+        tokens = extract_tokens("Uber's CTO discusses AI spending")
+        assert "uber" in tokens
+        assert "uber's" not in tokens
 
     def test_mixed_languages(self):
         tokens = extract_tokens("Kubernetes кластер production ready")
@@ -289,6 +295,22 @@ class TestCrossLanguageDedup:
         )
         # With multilingual E5 model, embedding similarity should be >= 0.90
         assert result is False, "Same event in different languages should be deduplicated"
+
+    def test_uber_ai_budget_chinese_to_reddit(self, dedup):
+        """Regression: short AI token must survive token overlap gate."""
+        dedup.check_and_add(
+            "四个月花光全年 AI 预算，Uber 总裁质疑 AI 投入合理性",
+            "CHINA TECH:ITHome",
+            "https://www.ithome.com/0/955/563.htm",
+        )
+
+        result = dedup.check_and_add(
+            "So, Uber CTO said that Uber burned their total 2026 AI budget within the first four months",
+            "Reddit:r/ChatGPT",
+            "https://reddit.com/r/ChatGPT/comments/1tp7ips/so_uber_cto_said_that_uber_burned_their_total/",
+        )
+
+        assert result is False, "Same Uber AI budget story should be deduplicated"
 
 
 class TestCleanup:
