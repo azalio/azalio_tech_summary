@@ -8,7 +8,10 @@ channels, Hacker News, Habr, GitHub Trending, HuggingFace Daily Papers, arXiv,
 Claude release notes, NVD/CISA/security feeds, Google News, and optional
 external collector scripts. It removes repeated stories with URL and semantic
 event deduplication, asks an LLM CLI to write a compact Russian digest, and
-posts the result to Telegram.
+posts the result to Telegram. Current-run event clusters are also surfaced into
+the prompt as ranking-only source-burst signals so repeated coverage from
+multiple sources can influence section priority without becoming an emitted
+fact by itself.
 
 The repository is intentionally small: the production path is a single Python
 process started from `main.py`, with persistent local state under
@@ -22,6 +25,9 @@ In scope:
   and global-news items from configured public sources.
 - Filtering already-seen URLs and semantically duplicated events before the LLM
   prompt is built.
+- Surfacing multi-source event bursts to the LLM prompt as ranking hints while
+  keeping observations and source counts out of the published digest unless the
+  count is itself newsworthy.
 - Calling an installed LLM CLI, preferring Gemini and falling back to Codex.
 - Refusing to publish raw collector output when the LLM layer returns no digest,
   while notifying the operator and preserving retry state.
@@ -66,7 +72,9 @@ SQLite databases, raw collector handoff JSON, and the previous digest text.
 
 - `main.py` orchestrates the run. It loads `.env`, initializes `EventDedup` and
   `Collectors`, calls each collector in order, builds `VIBE_PROMPT`, invokes the
-  LLM through `VibeCore`, posts the result, and stores the latest summary.
+  LLM through `VibeCore`, posts the result, and stores the latest summary. It
+  also formats current-run `event_signals` from semantic clusters and injects
+  them into the prompt as ranking-only context.
 - `collectors.py` owns source integrations. It contains RSS helpers, URL
   normalization, `sent_posts` URL deduplication, optional API-key collectors,
   source-specific formatting for the prompt payload, and handoff points for
@@ -74,7 +82,8 @@ SQLite databases, raw collector handoff JSON, and the previous digest text.
 - `dedup.py` owns semantic event clustering. It uses
   `intfloat/multilingual-e5-small` embeddings, token extraction, entity aliasing,
   Jaccard overlap, SQLite persistence, TTL cleanup, matching windows, and
-  cluster-size guards.
+  cluster-size guards. It tracks clusters touched during the current process and
+  exposes high/medium source-burst summaries through `event_signals()`.
 - `core.py` owns LLM CLI execution and Telegram delivery. It discovers Gemini or
   Codex from explicit env vars or PATH, deduplicates resolved binaries, runs
   Codex through `codex exec --skip-git-repo-check -o <tmpfile> -` so cron can
@@ -110,8 +119,10 @@ SQLite databases, raw collector handoff JSON, and the previous digest text.
    posted (see step 9). Semantic deduplication creates or updates event
    clusters for non-duplicate titles eagerly during this step.
 6. `main.py` inserts the previous digest and new source data into `VIBE_PROMPT`.
-7. In dry-run mode, the prompt is printed. Otherwise `VibeCore.ask_llm` calls
-   Gemini first and then Codex if Gemini is unavailable or fails. The fallback
+7. `main.py` formats current-run event signals and includes them in the prompt
+   as ranking-only context. In dry-run mode, the prompt is printed. Otherwise
+   `VibeCore.ask_llm` calls Codex first and then Gemini if Codex is unavailable
+   or fails. The fallback
    path is CLI-specific: Gemini reads stdin/stdout directly, while Codex writes
    its final answer to a temporary output file.
 8. `VibeCore.send_tg` formats the digest, posts it to Telegram, splits it by
@@ -158,6 +169,9 @@ the target before the next run.
 
 - Two-stage deduplication: normalized URL history catches exact repeats, while
   event clusters catch semantically repeated stories across sources.
+- Source-burst ranking: current-run event clusters with repeated observations or
+  multiple sources can promote a story during selection, but their counts are
+  prompt hints rather than publication facts.
 - Local state: all runtime memory is file-backed under `VIBE_WORKSPACE`, mostly
   through SQLite plus previous digest text and fetcher handoff JSON files.
 - Graceful degradation: missing optional API keys, missing optional scripts, and
@@ -208,14 +222,17 @@ No ADR documents are present in this repository as of this review.
 
 ## Freshness
 
-Reviewed on 2026-05-27 against repository evidence in `README.md`, `main.py`,
+Reviewed on 2026-05-29 against repository evidence in `README.md`, `main.py`,
 `collectors.py`, `dedup.py`, `core.py`, `standalone_reddit_digest.py`,
 `standalone_telegram_digest.py`, `test_dedup.py`, `env.example`,
 `env.deploy.example`, `Makefile`, `deploy/install-cron.sh`, and
 `deploy/install-logrotate.sh`.
 
-Current delta captured: source coverage now includes Telegram channels, Claude
+Current delta captured: source coverage includes Telegram channels, Claude
 release notes, GitHub Trending README snippets, broader arXiv/security/cloud
 feeds, and NVD/CISA-style security sources; each digest message appends a
-channel footer; deploy operations now include managed cron, logrotate,
-backup, and restore targets.
+channel footer; deploy operations include managed cron, logrotate, backup, and
+restore targets. The current prompt now enforces a Russian technical style,
+uses current-run source-burst event signals as ranking hints, preserves short
+tokens such as "AI" in event overlap checks, and prefers Codex before Gemini on
+the production host because Codex has the cron-safe final-output path.
