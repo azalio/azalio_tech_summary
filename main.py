@@ -184,12 +184,18 @@ def main():
     os.makedirs(os.path.join(workspace, "memory"), exist_ok=True)
     core = None if dry_run else VibeCore()
 
-    # Initialize event-clustering dedup
+    # Initialize event-clustering dedup. Embeddings-first gate with a
+    # language-agnostic anchor check in the gray zone (see dedup.py). The auto
+    # threshold sits above the measured false-pair ceiling for same-domain tech
+    # news (~0.90 on e5-small), so embeddings alone only merge near-duplicates;
+    # everything in 0.78–0.92 must also share entities/numbers (anchor overlap).
     dedup = EventDedup(
         db_dir=DEDUP_DB_DIR,
-        match_threshold=0.80,
+        gray_zone_min=0.78,
+        auto_match_threshold=0.92,
+        anchor_overlap_min=0.30,
         ttl_hours=168,
-        matching_ttl_hours=48,
+        matching_ttl_hours=72,
         max_cluster_size=50,
         dry_run=False,
     )

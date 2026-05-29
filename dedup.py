@@ -1,9 +1,18 @@
-"""Event-based deduplication with clustering, token overlap, and E5 embeddings.
+"""Event-based deduplication with clustering, anchor overlap, and E5 embeddings.
 
-Replaces pairwise title-only cosine similarity with event clusters that
-accumulate embeddings and entity tokens from multiple sources.
+Clusters headlines into "events". A new headline is matched against the
+(running-mean) centroid of each live cluster. The matching gate is
+embeddings-first with a cheap, language-agnostic anchor check in the gray zone:
 
-Model: intfloat/multilingual-e5-small (384-dim, RU+EN, retrieval-optimized).
+    emb_sim >= AUTO_MATCH       -> match (trust embeddings)
+    GRAY_MIN <= emb < AUTO      -> match iff anchor_overlap >= ANCHOR_MIN
+    emb_sim < GRAY_MIN          -> no match
+
+Anchors are canonical entities + Latin tokens (the RU<->EN / CN<->EN bridge) +
+salient numbers (years, versions). A year/version conflict raises the anchor
+bar to guard against over-merging two distinct events about the same actor.
+
+Model: intfloat/multilingual-e5-small (384-dim, RU+EN+CN, retrieval-optimized).
 """
 
 import json
@@ -65,8 +74,8 @@ _TRAILING_NOISE = re.compile(
 
 def normalize_headline(text: str) -> str:
     text = unicodedata.normalize("NFKC", text)
-    text = text.replace("\u2018", "'").replace("\u2019", "'")
-    text = text.replace("\u201c", '"').replace("\u201d", '"')
+    text = text.replace("‘", "'").replace("’", "'")
+    text = text.replace("“", '"').replace("”", '"')
     text = text.replace("—", "-")
     text = _LEADING_TAG.sub("", text)
     text = _SOURCE_SUFFIX.sub("", text)
@@ -113,12 +122,44 @@ _ENTITY_ALIASES = {
     'spacex': {'spacex', 'спейсикс'},
     'tesla': {'tesla', 'тесла'},
     'nvidia': {'nvidia', 'нвидиа'},
+    'bezos': {'bezos', 'безос'},
+    'artemis': {'artemis', 'артемида'},
+    'starship': {'starship'},
 }
 
 _ALIAS_LOOKUP = {}
 for _canon, _aliases in _ENTITY_ALIASES.items():
     for _alias in _aliases:
         _ALIAS_LOOKUP[_alias] = _canon
+
+# Multi-word entity phrases matched as substrings of the raw (lowercased)
+# headline — single-word token splitting can't recover "blue origin" or
+# "new glenn" as one entity, and these proper nouns are exactly what fragmented
+# developing stories across clusters. Word-boundary anchored to avoid partial
+# hits ("nasa" inside "nasal").
+# Canon keys here MUST match _ENTITY_ALIASES canon forms where they overlap
+# (e.g. 'spacex'), so the same surface form isn't double-counted as two anchors
+# — that would inflate overlap_coefficient for actor-only matches.
+_ALIAS_PHRASES = {
+    'blue_origin': ['blue origin'],
+    'new_glenn': ['new glenn'],
+    'new_shepard': ['new shepard'],
+    'spacex': ['spacex', 'space x'],
+    'falcon9': ['falcon 9'],
+    'falcon_heavy': ['falcon heavy'],
+    'blue_moon': ['blue moon'],
+    'james_webb': ['james webb', 'jwst'],
+}
+
+_PHRASE_PATTERNS = [
+    (_canon, re.compile(r'\b' + re.escape(_phrase) + r'\b'))
+    for _canon, _phrases in _ALIAS_PHRASES.items()
+    for _phrase in _phrases
+]
+
+_LATIN_RE = re.compile(r"[a-z][a-z0-9\-']*")
+_YEAR_RE = re.compile(r"\b(?:19|20)\d{2}\b")
+_VERSION_RE = re.compile(r"\b\d+\.\d+\b")
 
 
 def extract_tokens(text: str) -> set:
@@ -142,6 +183,69 @@ def jaccard_similarity(set_a: set, set_b: set) -> float:
     return len(intersection) / len(union) if union else 0.0
 
 
+def overlap_coefficient(set_a: set, set_b: set) -> float:
+    """|A ∩ B| / min(|A|, |B|). Robust when one headline is a short subset of
+    the other (Jaccard would understate that; overlap doesn't)."""
+    if not set_a or not set_b:
+        return 0.0
+    return len(set_a & set_b) / min(len(set_a), len(set_b))
+
+
+def extract_anchors(text: str) -> set:
+    """Language-agnostic anchors for the gray-zone gate.
+
+    Combines canonical multi/single-word entities, Latin-script tokens (the
+    cross-language bridge — "New Glenn"/"Uber"/"AI" survive in RU/CN headlines)
+    and salient numbers (years, dotted versions).
+    """
+    norm = normalize_headline(text)
+    low = norm.lower()
+    anchors = set()
+
+    for canon, pattern in _PHRASE_PATTERNS:
+        if pattern.search(low):
+            anchors.add(canon)
+
+    for w in _LATIN_RE.findall(low):
+        if w.endswith("'s"):
+            w = w[:-2]
+        if not w or w in _STOPWORDS:
+            continue
+        if len(w) >= 3 or w in _SHORT_TOKENS:
+            anchors.add(_ALIAS_LOOKUP.get(w, w))
+
+    for m in _YEAR_RE.finditer(low):
+        anchors.add(m.group(0))
+    for m in _VERSION_RE.finditer(low):
+        anchors.add(m.group(0))
+
+    return anchors
+
+
+def extract_numbers(text: str) -> dict:
+    """Typed salient numbers used only for over-merge protection.
+
+    Plain quantities ("5 Tbps", "60 years") are intentionally ignored — they
+    drift between reports of the same event. Only years and dotted versions are
+    precise enough to signal a genuine event mismatch.
+    """
+    low = normalize_headline(text).lower()
+    return {
+        "year": {m.group(0) for m in _YEAR_RE.finditer(low)},
+        "version": {m.group(0) for m in _VERSION_RE.finditer(low)},
+    }
+
+
+def number_conflict(nums_a: dict, nums_b: dict) -> bool:
+    """True if both sides name a year (or version) and they don't overlap."""
+    for key in ("year", "version"):
+        sa = nums_a.get(key) or set()
+        sb = nums_b.get(key) or set()
+        if sa and sb and not (sa & sb):
+            return True
+    return False
+
+
 # ── EventDedup ───────────────────────────────────────────────────────────
 
 class EventDedup:
@@ -149,24 +253,44 @@ class EventDedup:
 
     Args:
         db_dir: directory for the SQLite database.
-        match_threshold: combined score above which item is a duplicate.
+        match_threshold: gray-zone floor; below it, never a match. Kept for
+            backward compatibility — `gray_zone_min` overrides it when given.
+        gray_zone_min: emb_sim floor for the anchor-gated zone (default 0.78).
+        auto_match_threshold: emb_sim at/above which embeddings alone decide.
+        anchor_overlap_min: required anchor overlap in the gray zone.
+        anchor_overlap_conflict: required anchor overlap when a year/version
+            conflict is present (raises the bar to block over-merging).
         ttl_hours: how long to keep clusters before expiry.
+        matching_ttl_hours: a cluster stops accepting new matches this long
+            after its FIRST sighting (bounds how long one story stays open).
+        max_cluster_size: clusters at/above this size stop matching.
+        centroid_update_limit: stop updating the running-mean centroid after
+            this many items (prevents slow topic drift on huge clusters).
         dry_run: if True, log duplicates but do not skip.
     """
 
     def __init__(
         self,
         db_dir: str = "/tmp/event_dedup",
-        match_threshold: float = 0.80,
+        match_threshold: float = 0.78,
+        gray_zone_min: Optional[float] = None,
+        auto_match_threshold: float = 0.92,
+        anchor_overlap_min: float = 0.30,
+        anchor_overlap_conflict: float = 0.45,
         ttl_hours: int = 168,
-        matching_ttl_hours: int = 48,
+        matching_ttl_hours: int = 72,
         max_cluster_size: int = 50,
+        centroid_update_limit: int = 10,
         dry_run: bool = False,
     ):
-        self.threshold = match_threshold
+        self.gray_zone_min = gray_zone_min if gray_zone_min is not None else match_threshold
+        self.auto_match_threshold = auto_match_threshold
+        self.anchor_overlap_min = anchor_overlap_min
+        self.anchor_overlap_conflict = anchor_overlap_conflict
         self.ttl_hours = ttl_hours
         self.matching_ttl_hours = matching_ttl_hours
         self.max_cluster_size = max_cluster_size
+        self.centroid_update_limit = centroid_update_limit
         self.dry_run = dry_run
 
         os.makedirs(db_dir, exist_ok=True)
@@ -209,6 +333,15 @@ class EventDedup:
                 FOREIGN KEY (cluster_id) REFERENCES event_clusters(cluster_id)
             );
         """)
+        # Migrate older DBs: cumulative anchors/numbers were added later.
+        existing = {row[1] for row in self._conn.execute(
+            "PRAGMA table_info(event_clusters)")}
+        if "anchors_json" not in existing:
+            self._conn.execute(
+                "ALTER TABLE event_clusters ADD COLUMN anchors_json TEXT")
+        if "numbers_json" not in existing:
+            self._conn.execute(
+                "ALTER TABLE event_clusters ADD COLUMN numbers_json TEXT")
         self._conn.commit()
 
     def _cleanup(self):
@@ -232,17 +365,40 @@ class EventDedup:
 
     # ── Cluster memory ───────────────────────────────────────────────
 
+    @staticmethod
+    def _numbers_from_json(raw: Optional[str]) -> dict:
+        if not raw:
+            return {"year": set(), "version": set()}
+        data = json.loads(raw)
+        return {
+            "year": set(data.get("year", [])),
+            "version": set(data.get("version", [])),
+        }
+
     def _load_clusters(self) -> list:
         rows = self._conn.execute(
             "SELECT cluster_id, centroid, tokens_json, last_seen, "
-            "item_count, representative_title, first_seen FROM event_clusters"
+            "item_count, representative_title, first_seen, "
+            "anchors_json, numbers_json FROM event_clusters"
         ).fetchall()
         clusters = []
-        for cid, centroid_blob, tokens_json, last_seen, count, title, first_seen in rows:
+        for (cid, centroid_blob, tokens_json, last_seen, count, title,
+             first_seen, anchors_json, numbers_json) in rows:
+            # Legacy rows have no anchors/numbers yet — derive from the title so
+            # they still match until the next sighting backfills them.
+            if anchors_json:
+                anchors = set(json.loads(anchors_json))
+            else:
+                anchors = extract_anchors(title or "")
+            numbers = self._numbers_from_json(numbers_json)
+            if not numbers_json:
+                numbers = extract_numbers(title or "")
             clusters.append({
                 "id": cid,
                 "centroid": _blob_to_vec(centroid_blob),
                 "tokens": set(json.loads(tokens_json)),
+                "anchors": anchors,
+                "numbers": numbers,
                 "last_seen": last_seen,
                 "first_seen": first_seen,
                 "count": count,
@@ -253,7 +409,8 @@ class EventDedup:
     def _save_cluster(self, cluster: dict):
         self._conn.execute(
             "UPDATE event_clusters SET centroid=?, tokens_json=?, "
-            "last_seen=?, item_count=?, representative_title=? "
+            "last_seen=?, item_count=?, representative_title=?, "
+            "anchors_json=?, numbers_json=? "
             "WHERE cluster_id=?",
             (
                 _vec_to_blob(cluster["centroid"]),
@@ -261,24 +418,31 @@ class EventDedup:
                 cluster["last_seen"],
                 cluster["count"],
                 cluster["title"],
+                json.dumps(sorted(cluster["anchors"])),
+                json.dumps({k: sorted(v) for k, v in cluster["numbers"].items()}),
                 cluster["id"],
             )
         )
         self._conn.commit()
 
-    def _create_cluster(self, title: str, vec: np.ndarray,
-                        tokens: set, ts: float) -> dict:
+    def _create_cluster(self, title: str, vec: np.ndarray, tokens: set,
+                        anchors: set, numbers: dict, ts: float) -> dict:
         cur = self._conn.execute(
             "INSERT INTO event_clusters "
-            "(centroid, tokens_json, first_seen, last_seen, item_count, representative_title) "
-            "VALUES (?, ?, ?, ?, 1, ?)",
-            (_vec_to_blob(vec), json.dumps(sorted(tokens)), ts, ts, title)
+            "(centroid, tokens_json, first_seen, last_seen, item_count, "
+            "representative_title, anchors_json, numbers_json) "
+            "VALUES (?, ?, ?, ?, 1, ?, ?, ?)",
+            (_vec_to_blob(vec), json.dumps(sorted(tokens)), ts, ts, title,
+             json.dumps(sorted(anchors)),
+             json.dumps({k: sorted(v) for k, v in numbers.items()}))
         )
         self._conn.commit()
         cluster = {
             "id": cur.lastrowid,
             "centroid": vec.copy(),
             "tokens": tokens.copy(),
+            "anchors": set(anchors),
+            "numbers": {k: set(v) for k, v in numbers.items()},
             "first_seen": ts,
             "last_seen": ts,
             "count": 1,
@@ -287,9 +451,19 @@ class EventDedup:
         self._clusters.append(cluster)
         return cluster
 
-    def _add_to_cluster(self, cluster: dict, title: str,
-                        vec: np.ndarray, tokens: set, ts: float):
-        # Centroid is FROZEN (first item's embedding) — no averaging
+    def _add_to_cluster(self, cluster: dict, vec: np.ndarray,
+                        anchors: set, numbers: dict, ts: float):
+        # Running-mean centroid, frozen once the cluster is well-established to
+        # stop slow topic drift on long-lived clusters.
+        if cluster["count"] < self.centroid_update_limit:
+            n = cluster["count"]
+            blended = cluster["centroid"] * n + vec
+            norm = float(np.linalg.norm(blended))
+            if norm > 0:
+                cluster["centroid"] = np.asarray(blended / norm, dtype=np.float32)
+        cluster["anchors"] |= anchors
+        cluster["numbers"]["year"] |= numbers["year"]
+        cluster["numbers"]["version"] |= numbers["version"]
         cluster["last_seen"] = max(cluster["last_seen"], ts)
         cluster["count"] += 1
         self._save_cluster(cluster)
@@ -315,7 +489,7 @@ class EventDedup:
     def _encode(self, text: str) -> np.ndarray:
         model = _get_model()
         vec = model.encode(f"passage: {text}", normalize_embeddings=True)
-        return vec.astype(np.float32)
+        return np.asarray(vec, dtype=np.float32)
 
     def _make_text(self, title: str, description: str = "") -> str:
         text = normalize_headline(title)
@@ -326,50 +500,48 @@ class EventDedup:
 
     # ── Matching ─────────────────────────────────────────────────────
 
-    def _find_best_cluster(self, vec: np.ndarray, title_tokens: set,
-                           ts: float) -> Optional[tuple]:
+    def _find_best_cluster(self, vec: np.ndarray, anchors: set,
+                           numbers: dict, ts: float) -> Optional[tuple]:
         if not self._clusters:
             return None
 
-        canon_new = canonicalize(title_tokens)
         best_emb_sim = -1.0
         best_cluster = None
-        best_jaccard = 0.0
+        best_overlap = 0.0
 
         matching_cutoff = ts - self.matching_ttl_hours * 3600
 
         for cluster in self._clusters:
-            # Skip clusters too old or too large for matching
+            # Skip clusters too old (story closed) or too large for matching
             if cluster["first_seen"] < matching_cutoff:
                 continue
             if cluster["count"] >= self.max_cluster_size:
                 continue
 
-            # Compare against frozen centroid (= first item's embedding)
             emb_sim = float(np.dot(vec, cluster["centroid"]))
+            if emb_sim < self.gray_zone_min:
+                continue
 
-            # Tiered gate:
-            #   High confidence (emb >= 0.90): trust embeddings alone
-            #   Medium confidence (emb >= threshold): require Jaccard >= 0.15
-            if emb_sim >= 0.90:
+            overlap = overlap_coefficient(anchors, cluster["anchors"])
+            conflict = number_conflict(numbers, cluster["numbers"])
+
+            # A year/version conflict downgrades even high-confidence embedding
+            # matches to "needs strong anchor agreement" — blocks two distinct
+            # events about the same actor from collapsing together.
+            if conflict:
+                is_match = overlap >= self.anchor_overlap_conflict
+            elif emb_sim >= self.auto_match_threshold:
                 is_match = True
-                j = 0.0
-            elif emb_sim >= self.threshold:
-                cls_tokens = extract_tokens(cluster["title"])
-                canon_cls = canonicalize(cls_tokens)
-                j = jaccard_similarity(canon_new, canon_cls)
-                is_match = j >= 0.15
             else:
-                is_match = False
-                j = 0.0
+                is_match = overlap >= self.anchor_overlap_min
 
             if is_match and emb_sim > best_emb_sim:
                 best_emb_sim = emb_sim
                 best_cluster = cluster
-                best_jaccard = j
+                best_overlap = overlap
 
         if best_cluster is not None:
-            return (best_cluster, best_emb_sim, best_jaccard)
+            return (best_cluster, best_emb_sim, best_overlap)
         return None
 
     # ── Public API (compatible with SemanticDedup) ───────────────────
@@ -386,19 +558,21 @@ class EventDedup:
 
         text = self._make_text(title, description)
         vec = self._encode(text)
-        title_tokens = extract_tokens(normalize_headline(title))
+        tokens = extract_tokens(normalize_headline(title))
+        anchors = extract_anchors(title)
+        numbers = extract_numbers(title)
 
-        match = self._find_best_cluster(vec, title_tokens, ts)
+        match = self._find_best_cluster(vec, anchors, numbers, ts)
 
         if match:
-            cluster, emb_sim, jac = match
+            cluster, emb_sim, overlap = match
             self._stats["duplicates"] += 1
             logger.info(
-                "DUPLICATE (emb=%.2f jac=%.2f): [%s] %r  ~=  cluster #%d %r",
-                emb_sim, jac, source, title[:80],
+                "DUPLICATE (emb=%.2f overlap=%.2f): [%s] %r  ~=  cluster #%d %r",
+                emb_sim, overlap, source, title[:80],
                 cluster["id"], cluster["title"][:80],
             )
-            self._add_to_cluster(cluster, title, vec, title_tokens, ts)
+            self._add_to_cluster(cluster, vec, anchors, numbers, ts)
             self._mark_touched(cluster, source)
 
             if self.dry_run:
@@ -406,8 +580,8 @@ class EventDedup:
             return False
 
         # New event
-        cluster = self._create_cluster(title, vec, title_tokens, ts)
-        self._save_item(cluster["id"], title, source, url, vec, title_tokens, ts)
+        cluster = self._create_cluster(title, vec, tokens, anchors, numbers, ts)
+        self._save_item(cluster["id"], title, source, url, vec, tokens, ts)
         self._mark_touched(cluster, source)
         self._stats["added"] += 1
         return True

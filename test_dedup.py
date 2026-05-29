@@ -15,8 +15,12 @@ from dedup import (
     EventDedup,
     normalize_headline,
     extract_tokens,
+    extract_anchors,
+    extract_numbers,
     canonicalize,
     jaccard_similarity,
+    overlap_coefficient,
+    number_conflict,
 )
 from collectors import Collectors
 from core import VibeCore
@@ -150,6 +154,82 @@ class TestJaccardSimilarity:
     def test_empty_sets(self):
         assert jaccard_similarity(set(), set()) == 0.0
         assert jaccard_similarity({"a"}, set()) == 0.0
+
+
+class TestOverlapCoefficient:
+    def test_identical(self):
+        assert overlap_coefficient({"a", "b"}, {"a", "b"}) == 1.0
+
+    def test_subset_scores_full(self):
+        # Short headline fully contained in a longer one → overlap 1.0
+        # (Jaccard would understate this at 0.4).
+        assert overlap_coefficient({"a", "b"}, {"a", "b", "c", "d", "e"}) == 1.0
+
+    def test_disjoint(self):
+        assert overlap_coefficient({"a"}, {"b"}) == 0.0
+
+    def test_empty(self):
+        assert overlap_coefficient(set(), {"a"}) == 0.0
+
+
+class TestExtractAnchors:
+    def test_multiword_entity_phrase(self):
+        anchors = extract_anchors("Blue Origin's New Glenn rocket explodes")
+        assert "blue_origin" in anchors
+        assert "new_glenn" in anchors
+
+    def test_latin_tokens_survive_in_cyrillic(self):
+        # The cross-language bridge: Latin fragments inside a Russian headline.
+        anchors = extract_anchors("Ракета New Glenn взорвалась во время испытаний")
+        assert "new_glenn" in anchors
+        assert "glenn" in anchors
+
+    def test_short_ai_token_kept(self):
+        anchors = extract_anchors("四个月花光全年 AI 预算，Uber 总裁质疑")
+        assert "ai" in anchors
+        assert "uber" in anchors
+
+    def test_years_and_versions_are_anchors(self):
+        anchors = extract_anchors("Kubernetes 1.32 ships in 2026")
+        assert "1.32" in anchors
+        assert "2026" in anchors
+
+    def test_single_word_alias_canonicalized(self):
+        anchors = extract_anchors("NASA selects a contractor")
+        assert "nasa" in anchors
+
+
+class TestExtractNumbers:
+    def test_years_typed(self):
+        assert extract_numbers("Event in 2026")["year"] == {"2026"}
+
+    def test_versions_typed(self):
+        assert extract_numbers("Kubernetes 1.32 released")["version"] == {"1.32"}
+
+    def test_plain_quantities_ignored(self):
+        # "5 Tbps" / "60 years" must NOT become number-conflict signals.
+        nums = extract_numbers("DDoS attack reaching 5 Tbps after 60 years")
+        assert nums["year"] == set()
+        assert nums["version"] == set()
+
+
+class TestNumberConflict:
+    def test_disjoint_years_conflict(self):
+        assert number_conflict({"year": {"2024"}, "version": set()},
+                               {"year": {"2025"}, "version": set()}) is True
+
+    def test_shared_year_no_conflict(self):
+        assert number_conflict({"year": {"2026"}, "version": set()},
+                               {"year": {"2026"}, "version": set()}) is False
+
+    def test_one_sided_no_conflict(self):
+        # Only one headline names a year → not a conflict.
+        assert number_conflict({"year": {"2026"}, "version": set()},
+                               {"year": set(), "version": set()}) is False
+
+    def test_disjoint_versions_conflict(self):
+        assert number_conflict({"year": set(), "version": {"3.0"}},
+                               {"year": set(), "version": {"3.1"}}) is True
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -330,6 +410,49 @@ class TestCrossLanguageDedup:
         )
 
         assert result is False, "Same Uber AI budget story should be deduplicated"
+
+
+class TestBlueOriginFragmentation:
+    """Regression for the real prod bug: one developing story ('New Glenn
+    explosion') fragmented into 3 clusters and hit the digest 3 times because
+    the old Jaccard gate vetoed embedding matches it should have trusted."""
+
+    def test_explosion_story_collapses_to_one_cluster(self, dedup):
+        # Realistic burst of coverage for one event across sources, languages
+        # and angles — as the prod cluster accumulated dozens of items. With
+        # cumulative anchors the variant framings all fold into one cluster.
+        coverage = [
+            ("Blue Origin's New Glenn rocket explodes during testing in Florida",
+             "TECH NEWS:TechCrunch"),
+            ("Ракета New Glenn взорвалась на площадке во время огневых испытаний",
+             "Telegram:@seeallochnaya"),
+            ("New Glenn explosion at Blue Origin test stand, no injuries reported",
+             "RSS:TheRegister"),
+            ("Blue Origin New Glenn anomaly during static fire, NASA monitoring",
+             "GOOGLE NEWS:Space"),
+            ("Blue Origin explosion could be setback to NASA's Artemis moon program",
+             "GOOGLE NEWS:SpaceX/NASA"),
+        ]
+        results = [
+            dedup.check_and_add(title, src, f"http://bo{i}.com")
+            for i, (title, src) in enumerate(coverage)
+        ]
+        # Only the first headline is a new event; every later angle/language is
+        # recognised as the same story (was 3+ separate clusters before).
+        assert results[0] is True
+        assert sum(1 for r in results if r is True) == 1
+        assert dedup.stats()["total_clusters"] == 1
+
+    def test_distinct_spacex_events_stay_separate(self, dedup):
+        """Over-merge guard: same actor, genuinely different events must not
+        collapse just because they share 'SpaceX'."""
+        assert dedup.check_and_add(
+            "SpaceX Starship completes orbital refueling test",
+            "src1", "http://s1.com") is True
+        # Different event about the same company → should remain its own item.
+        assert dedup.check_and_add(
+            "SpaceX wins $2B Pentagon contract for satellite network",
+            "src2", "http://s2.com") is True
 
 
 class TestCleanup:
@@ -591,7 +714,7 @@ class TestClaudeReleaseCollector:
             def raise_for_status(self):
                 return None
 
-        monkeypatch.setattr("collectors.requests.get", lambda *args, **kwargs: Response())
+        monkeypatch.setattr("collectors.requests.get", lambda *_args, **_kwargs: Response())
 
         collector = Collectors(str(tmp_path), dedup=None)
         content = collector.collect_claude_releases()
