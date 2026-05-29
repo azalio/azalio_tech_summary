@@ -208,7 +208,16 @@ class Collectors:
         cutoff_ts = _time.time() - max_age_days * 86400
         for name, url in feeds.items():
             try:
-                feed = feedparser.parse(url)
+                # Fetch with an explicit timeout instead of letting feedparser
+                # fetch via urllib — feedparser.parse(url) has NO timeout and a
+                # single stalled feed hangs the whole pipeline indefinitely.
+                resp = requests.get(
+                    url,
+                    headers={"User-Agent": "Mozilla/5.0 vibe-intel/1.0"},
+                    timeout=15,
+                )
+                resp.raise_for_status()
+                feed = feedparser.parse(resp.content)
                 per_feed = 0
                 for entry in feed.entries:
                     if count >= max_total:
