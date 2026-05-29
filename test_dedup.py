@@ -7,6 +7,7 @@ import shutil
 import sqlite3
 import time
 import tempfile
+from datetime import datetime, timezone
 
 import pytest
 
@@ -571,6 +572,36 @@ class TestOpecScenario:
         assert results[0] is True
         passed = sum(1 for r in results if r is True)
         assert passed <= 2, f"Expected at most 2 to pass, got {passed}"
+
+
+class TestClaudeReleaseCollector:
+    def test_groups_same_product_release_items(self, tmp_path, monkeypatch):
+        now = datetime.now(timezone.utc)
+        date_str = f"{now.strftime('%B')} {now.day}, {now.year}"
+        release_notes = f"""
+### {date_str}
+- On `<NextOpus />`, the `effort` parameter defaults to `high` across all surfaces, including Claude Code and Messages API.
+- Task budgets now support `<NextOpus />`.
+- Admins can export workspace audit logs from the console.
+"""
+
+        class Response:
+            text = release_notes
+
+            def raise_for_status(self):
+                return None
+
+        monkeypatch.setattr("collectors.requests.get", lambda *args, **kwargs: Response())
+
+        collector = Collectors(str(tmp_path), dedup=None)
+        content = collector.collect_claude_releases()
+        lines = [line for line in content.splitlines() if line.startswith("- ")]
+        nextopus_lines = [line for line in lines if "NextOpus" in line]
+
+        assert len(nextopus_lines) == 1
+        assert "effort parameter defaults" in nextopus_lines[0]
+        assert "Task budgets now support" in nextopus_lines[0]
+        assert any("audit logs" in line for line in lines)
 
 
 class TestRecapFilter:

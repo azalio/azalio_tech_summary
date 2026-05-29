@@ -696,6 +696,26 @@ class Collectors:
             text = text[:max_chars].rsplit(" ", 1)[0] + "…"
         return text
 
+    _CLAUDE_XML_TAG_RE = re.compile(r'<\s*([A-Za-z][A-Za-z0-9_-]*)\s*/?\s*>')
+    _CLAUDE_MODEL_RE = re.compile(
+        r'\bClaude\s+(?:Opus|Sonnet|Haiku)(?:\s+\d+(?:\.\d+)*)?\b',
+        re.IGNORECASE,
+    )
+
+    def _claude_release_group_key(self, text):
+        """Return a stable key/display pair for product-specific release items."""
+        m = self._CLAUDE_XML_TAG_RE.search(text or "")
+        if m:
+            tag = m.group(1)
+            return (f"tag:{tag.lower()}", f"<{tag} />")
+
+        m = self._CLAUDE_MODEL_RE.search(text or "")
+        if m:
+            label = re.sub(r'\s+', ' ', m.group(0)).strip()
+            return (f"model:{label.lower()}", label)
+
+        return None
+
     def collect_claude_releases(self):
         """Anthropic Claude Platform release notes (last 48h)."""
         print("Fetching Claude Platform release notes...")
@@ -735,6 +755,8 @@ class Collectors:
 
             # Extract top-level bullet items (lines starting with "- ")
             items = re.findall(r'^- (.+)', block, re.MULTILINE)
+            groups = []
+            group_by_key = {}
             for item in items:
                 # Strip markdown links to plain text for dedup
                 plain = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', item).strip()
@@ -745,7 +767,36 @@ class Collectors:
                 item_url = f"claude-release:{item_key}"
                 if self._is_seen(item_url):
                     continue
-                self._mark_seen(item_url, "ClaudePlatform")
+
+                group_key = self._claude_release_group_key(plain)
+                if group_key:
+                    key, label = group_key
+                    stable_key = f"{date_str}:{key}"
+                else:
+                    key, label = item_url, ""
+                    stable_key = item_url
+
+                group = group_by_key.get(stable_key)
+                if group is None:
+                    group = {"key": key, "label": label, "items": []}
+                    group_by_key[stable_key] = group
+                    groups.append(group)
+                group["items"].append((plain, item_url))
+
+            for group in groups:
+                entries = group["items"]
+                if group["label"] and len(entries) > 1:
+                    joined = "; ".join(plain.rstrip(".") for plain, _ in entries)
+                    plain = f"{group['label']} updates: {joined}."
+                    dedup_key = hashlib.md5(
+                        f"{date_str}:{group['key']}:{plain}".encode()
+                    ).hexdigest()
+                    item_url = f"claude-release-group:{dedup_key}"
+                else:
+                    plain, item_url = entries[0]
+
+                for _, original_url in entries:
+                    self._mark_seen(original_url, "ClaudePlatform")
                 if self._is_semantic_dup(plain, "ClaudePlatform", item_url):
                     continue
                 content += f"- {plain}\n"
