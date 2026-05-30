@@ -471,7 +471,10 @@ class Collectors:
 
     def collect_arxiv(self):
         """ArXiv AI/ML/agents/code papers. cs.MA covers multi-agent systems and
-        cs.CL/cs.SE catch LLM-agent and code-agent papers that don't land in cs.AI."""
+        cs.CL/cs.SE catch LLM-agent and code-agent papers that don't land in cs.AI.
+        cs.DC (distributed/parallel/cluster) surfaces the applied infra-relevant
+        work — distributed inference, GPU scheduling, serving, fault tolerance —
+        that the DevOps/SRE reader cares about more than fundamental ML theory."""
         print("Fetching ArXiv AI/ML...")
         feeds = {
             "cs.AI": "http://export.arxiv.org/rss/cs.AI",
@@ -479,8 +482,9 @@ class Collectors:
             "cs.MA": "http://export.arxiv.org/rss/cs.MA",
             "cs.CL": "http://export.arxiv.org/rss/cs.CL",
             "cs.SE": "http://export.arxiv.org/rss/cs.SE",
+            "cs.DC": "http://export.arxiv.org/rss/cs.DC",
         }
-        return self._fetch_rss(feeds, "ARXIV AI/ML PAPERS", max_per_feed=5, max_total=25)
+        return self._fetch_rss(feeds, "ARXIV AI/ML PAPERS", max_per_feed=5, max_total=30)
 
     def collect_tech_news(self):
         """TechCrunch, Ars Technica, Wired, The Verge RSS."""
