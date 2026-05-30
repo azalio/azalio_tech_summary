@@ -29,6 +29,14 @@ ssh "$SSH_TARGET" "cd $REMOTE_DIR && <cmd>"
   "why did the digest do X" question against the live DB on the server.
 - Dedup DB: `$REMOTE_DIR/workspace/memory/semantic_dedup/events.db` (on server).
 - Last posted digest: `$REMOTE_DIR/workspace/memory/last_intel_summary.txt`.
+- **Historical post data**: `$REMOTE_DIR/workspace/memory/digest_runs.jsonl` —
+  append-only JSONL, one record per run (`ts`, `intelligence` = the raw
+  candidates incl. ArXiv/HF papers blocks, `event_signals`, `summary` = the
+  posted digest). This is the audit trail for "what did the LLM editor keep vs
+  drop" — e.g. whether the applied-vs-fundamental AI/ML filter is behaving.
+  Rotated by logrotate (monthly, 12 generations); older history is gzipped
+  siblings (`digest_runs.jsonl.N.gz`). Inspect with `jq` on the server, e.g.
+  `tail -n 5 …/digest_runs.jsonl | jq -r '.ts, .summary'`.
 
 ## Running & verifying
 
