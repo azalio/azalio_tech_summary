@@ -176,6 +176,10 @@ DEDUP_DB_DIR = os.path.join(WORKSPACE, "memory", "semantic_dedup")
 # filter is behaving (council-recommended input/output logging). One JSON object
 # per line; never block the digest if it fails to write.
 DIGEST_LOG_PATH = os.path.join(WORKSPACE, "memory", "digest_runs.jsonl")
+# Sentinel the editor emits for a genuinely quiet hour (see VIBE_PROMPT). When
+# the digest is just this line, we suppress the Telegram post entirely instead
+# of spamming the channel with a "nothing happened" notice.
+NO_NEWS_MARKER = "значимых новостей не зафиксировано"
 
 def load_last_summary():
     try:
@@ -194,6 +198,20 @@ def save_summary(text):
     except OSError as e:
         # Telegram post already went out — don't crash on a memory write failure.
         print(f"save_summary: failed to write {LAST_SUMMARY_PATH}: {e}")
+
+def is_empty_digest(summary):
+    """True if the editor signalled a genuinely quiet hour (the no-news sentinel)
+    rather than a real digest. Tolerant of minor LLM wording/punctuation drift,
+    but length-gated so a real digest that merely mentions the phrase isn't
+    suppressed."""
+    norm = " ".join(summary.split()).lower()
+    if NO_NEWS_MARKER not in norm:
+        return False
+    # A real digest always carries bullets and links; the sentinel line has
+    # neither. This guards against suppressing a real digest that happens to
+    # mention the phrase, with the length cap as a final backstop.
+    has_content = "•" in summary or "](" in summary
+    return not has_content and len(norm) < 200
 
 def log_digest_run(intelligence, event_signals, summary):
     """Append one JSON record of this run's editor input/output for later review.
@@ -355,8 +373,21 @@ def main():
             return
 
         # Audit the editor's decision (input candidates vs kept digest) before
-        # delivery — captured regardless of whether the Telegram post succeeds.
+        # delivery — captured regardless of whether we post. Quiet hours are
+        # logged too, so the audit trail shows whether "no news" was a genuinely
+        # thin input or the filter over-pruning.
         log_digest_run(all_intelligence_data, event_signals, summary)
+
+        if is_empty_digest(summary):
+            # Genuinely quiet hour: the editor found nothing worth posting. Don't
+            # spam the channel with a "nothing happened" notice. Advance URL
+            # dedup (we *did* adjudicate these candidates, so the same low-value
+            # items aren't re-judged every quiet hour), but DON'T overwrite
+            # last_summary — keep the last real digest as the dedup anchor for
+            # the next run's "previous report" context.
+            print("editor returned the no-news sentinel — skipping post (quiet hour)")
+            collectors.commit_seen()
+            return
 
         # commit_seen + save_summary only after a successful Telegram delivery.
         # If send fails, pending URL marks stay un-persisted so the next run's
