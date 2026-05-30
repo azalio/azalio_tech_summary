@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 import os
 import sys
+import json
+from datetime import datetime, timezone
 
 # Add current dir to path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -169,6 +171,11 @@ WORKSPACE = os.path.expanduser(os.environ.get("VIBE_WORKSPACE", "./workspace"))
 DIGEST_CHAT = os.environ.get("TELEGRAM_DIGEST_CHAT", "@azalio_tech_summary")
 LAST_SUMMARY_PATH = os.path.join(WORKSPACE, "memory", "last_intel_summary.txt")
 DEDUP_DB_DIR = os.path.join(WORKSPACE, "memory", "semantic_dedup")
+# Append-only audit log of editor decisions: what candidates went in vs what the
+# LLM kept. Lets us review periodically whether the AI/ML applied-vs-fundamental
+# filter is behaving (council-recommended input/output logging). One JSON object
+# per line; never block the digest if it fails to write.
+DIGEST_LOG_PATH = os.path.join(WORKSPACE, "memory", "digest_runs.jsonl")
 
 def load_last_summary():
     try:
@@ -187,6 +194,26 @@ def save_summary(text):
     except OSError as e:
         # Telegram post already went out — don't crash on a memory write failure.
         print(f"save_summary: failed to write {LAST_SUMMARY_PATH}: {e}")
+
+def log_digest_run(intelligence, event_signals, summary):
+    """Append one JSON record of this run's editor input/output for later review.
+
+    Stores the raw candidate intelligence (incl. the ArXiv / HuggingFace papers
+    blocks) alongside the final digest, so we can audit what the applied-vs-
+    fundamental AI/ML filter actually dropped vs kept. Best-effort: a logging
+    failure must never affect the already-posted digest."""
+    try:
+        os.makedirs(os.path.dirname(DIGEST_LOG_PATH), exist_ok=True)
+        record = {
+            "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "intelligence": intelligence,
+            "event_signals": event_signals,
+            "summary": summary,
+        }
+        with open(DIGEST_LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except OSError as e:
+        print(f"log_digest_run: failed to write {DIGEST_LOG_PATH}: {e}")
 
 def format_event_signals(signals):
     if not signals:
@@ -326,6 +353,10 @@ def main():
                 title="DIGEST FAILURE",
             )
             return
+
+        # Audit the editor's decision (input candidates vs kept digest) before
+        # delivery — captured regardless of whether the Telegram post succeeds.
+        log_digest_run(all_intelligence_data, event_signals, summary)
 
         # commit_seen + save_summary only after a successful Telegram delivery.
         # If send fails, pending URL marks stay un-persisted so the next run's
