@@ -18,7 +18,7 @@ DEPLOY_FILES := main.py core.py collectors.py dedup.py \
 BACKUP_DIR ?= backups
 BACKUP_FILE := $(BACKUP_DIR)/$(shell date +%F).tgz
 
-.PHONY: help install test deploy install-cron install-logrotate add-channels backup restore lint
+.PHONY: help install test deploy install-cron install-logrotate add-channels check-channel backup restore lint
 
 help:
 	@echo 'Targets:'
@@ -29,6 +29,8 @@ help:
 	@echo '  make install-logrotate  install /etc/logrotate.d/azalio-tech-summary on $$SSH_TARGET (uses sudo)'
 	@echo '  make add-channels       merge Telegram channels into $$REMOTE_DIR/.env (idempotent, backs up first)'
 	@echo '                          CHANNELS="@a https://t.me/b" make add-channels'
+	@echo '  make check-channel      verify channels resolve & are readable by the bot session'
+	@echo '                          CHANNELS="@a https://t.me/b" make check-channel'
 	@echo '  make backup             snapshot .env + workspace from $$SSH_TARGET to $$BACKUP_FILE'
 	@echo '  make restore            restore $$BACKUP onto $$SSH_TARGET:$$REMOTE_DIR'
 	@echo '                          Configure SSH_JUMP/SSH_TARGET/REMOTE_DIR in .env.deploy'
@@ -63,6 +65,12 @@ add-channels:
 	@echo "Merging Telegram channels into $(SSH_TARGET):$(REMOTE_DIR)/.env (idempotent)..."
 	scp $(SSH_OPTS) deploy/merge_channels.py $(SSH_TARGET):/tmp/merge_channels.py
 	ssh $(SSH_OPTS) $(SSH_TARGET) "cp -a $(REMOTE_DIR)/.env $(REMOTE_DIR)/.env.bak.\$$(date +%Y%m%d-%H%M%S) && python3 /tmp/merge_channels.py $(REMOTE_DIR)/.env $(CHANNELS) && rm /tmp/merge_channels.py"
+
+check-channel:
+	@test -n "$(CHANNELS)" || (echo 'Usage: CHANNELS="@a https://t.me/b" make check-channel'; exit 1)
+	@echo "Checking channel readability via the bot session on $(SSH_TARGET)..."
+	scp $(SSH_OPTS) deploy/check_channel.py $(SSH_TARGET):/tmp/check_channel.py
+	ssh $(SSH_OPTS) $(SSH_TARGET) "cd $(REMOTE_DIR) && .venv/bin/python /tmp/check_channel.py $(CHANNELS); rc=\$$?; rm /tmp/check_channel.py; exit \$$rc"
 
 install-logrotate:
 	@echo "Installing logrotate config on $(SSH_TARGET) for $(REMOTE_DIR) (uses sudo)..."
