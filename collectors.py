@@ -893,8 +893,11 @@ class Collectors:
             "GitHub Blog": "https://github.blog/feed/",
             "Netflix Tech": "https://netflixtechblog.com/feed",
             "CISA Alerts": "https://www.cisa.gov/cybersecurity-advisories/all.xml",
+            "SRE Weekly": "https://sreweekly.com/feed/",
+            "Brendan Gregg": "https://www.brendangregg.com/blog/rss.xml",
+            "Julia Evans": "https://jvns.ca/atom.xml",
         }
-        return self._fetch_rss(feeds, "INFRA / DEVOPS / SRE", max_per_feed=2, max_total=26)
+        return self._fetch_rss(feeds, "INFRA / DEVOPS / SRE", max_per_feed=2, max_total=32)
 
     def collect_security_news(self):
         """Krebs, The Hacker News, BleepingComputer, Project Zero, Help Net Security
@@ -996,8 +999,10 @@ class Collectors:
         return content if count > 0 else ""
 
     def collect_ai_labs(self):
-        """Official lab blogs (OpenAI, DeepMind, Meta) and individual high-signal
-        AI writers (Willison, Raschka, Karpathy)."""
+        """Official lab blogs (OpenAI, DeepMind, Meta, Google Research) and
+        individual high-signal AI writers (Willison, Raschka, Karpathy). HF Blog +
+        NVIDIA Technical Blog cover the applied serving/quantization/GPU/inference
+        angle; Latent Space is practical AI-engineering (serving, agents, eval)."""
         print("Fetching AI labs RSS...")
         feeds = {
             "OpenAI": "https://openai.com/news/rss.xml",
@@ -1006,8 +1011,12 @@ class Collectors:
             "Simon Willison": "https://simonwillison.net/atom/everything/",
             "Sebastian Raschka": "https://sebastianraschka.com/rss_feed.xml",
             "Karpathy": "https://karpathy.github.io/feed.xml",
+            "HuggingFace Blog": "https://huggingface.co/blog/feed.xml",
+            "NVIDIA Technical Blog": "https://developer.nvidia.com/blog/feed/",
+            "Latent Space": "https://www.latent.space/feed",
+            "Google Research": "https://research.google/blog/rss/",
         }
-        return self._fetch_rss(feeds, "AI LABS", max_per_feed=3, max_total=16)
+        return self._fetch_rss(feeds, "AI LABS", max_per_feed=3, max_total=22)
 
     def collect_eng_curated(self):
         """Community-curated and individual-curator engineering signal.
@@ -1018,8 +1027,11 @@ class Collectors:
         feeds = {
             "Lobsters": "https://lobste.rs/rss",
             "Pragmatic Engineer": "https://newsletter.pragmaticengineer.com/feed",
+            "InfoQ": "https://feed.infoq.com/",
+            "Stripe Engineering": "https://stripe.com/blog/feed.rss",
+            "Discord Engineering": "https://discord.com/blog/rss.xml",
         }
-        return self._fetch_rss(feeds, "ENGINEERING CURATED", max_per_feed=5, max_total=10)
+        return self._fetch_rss(feeds, "ENGINEERING CURATED", max_per_feed=4, max_total=16)
 
     def collect_finnhub(self):
         """Finnhub market news (needs FINNHUB_API_KEY env var)."""
