@@ -41,6 +41,7 @@ TEXT_SUBS = ["ClaudeAI", "kimi", "interesting", "ThinkingDeeplyAI", "KafkaFPS",
              "selfhosted", "homelab",
              # AI / ML Engineering
              "MachineLearning", "LocalLLaMA", "StableDiffusion", "MLOps",
+             "singularity",
              # Security
              "netsec", "cybersecurity", "ReverseEngineering", "privacy",
              # Crypto / DeFi Tech
