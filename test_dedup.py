@@ -748,7 +748,10 @@ class TestClaudeReleaseCollector:
             def raise_for_status(self):
                 return None
 
-        monkeypatch.setattr("collectors.requests.get", lambda *_args, **_kwargs: Response())
+        def _fake_get(*args, **kwargs):
+            _ = (args, kwargs)  # mock for requests.get — args intentionally unused
+            return Response()
+        monkeypatch.setattr("collectors.requests.get", _fake_get)
 
         collector = Collectors(str(tmp_path), dedup=None)
         content = collector.collect_claude_releases()
