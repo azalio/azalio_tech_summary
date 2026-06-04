@@ -350,8 +350,10 @@ def main():
     # Log dedup stats
     stats = dedup.stats()
     print(f"[DEDUP] Checked: {stats['checked']} | Duplicates: {stats['duplicates']} | Clusters: {stats['total_clusters']} | Items: {stats['total_items']}")
-    event_signals = format_event_signals(dedup.event_signals())
-    dedup.close()
+    signals = dedup.event_signals()
+    event_signals = format_event_signals(signals)
+    # NB: dedup is left open until after the post so mark_reported() can flag the
+    # clusters we actually publish; closed on every exit path below.
 
     # 2. Summary
     if all_intelligence_data.strip():
@@ -371,6 +373,7 @@ def main():
             print(prompt)
             print("=" * 60)
             print(f"[DRY RUN] {len(prompt)} chars in prompt. Skipping LLM call and Telegram post.")
+            dedup.close()
             return
         assert core is not None
         summary = core.ask_llm(prompt)
@@ -389,6 +392,7 @@ def main():
                 "Источники собраны, но не закоммичены: следующий запуск повторит попытку.",
                 title="DIGEST FAILURE",
             )
+            dedup.close()
             return
 
         # Audit the editor's decision (input candidates vs kept digest) before
@@ -406,6 +410,7 @@ def main():
             # the next run's "previous report" context.
             print("editor returned the no-news sentinel — skipping post (quiet hour)")
             collectors.commit_seen()
+            dedup.close()
             return
 
         # commit_seen + save_summary only after a successful Telegram delivery.
@@ -417,8 +422,13 @@ def main():
         if core.send_tg(summary, title="WORLD INTEL BRIEF", chat_id=DIGEST_CHAT):
             collectors.commit_seen()
             save_summary(summary)
+            # Story published — don't re-surface these clusters as fresh bursts
+            # on later runs (the "same news for days" repost).
+            dedup.mark_reported([s["cluster_id"] for s in signals])
         else:
             print("send_tg failed — leaving URL marks uncommitted for retry")
+
+    dedup.close()
 
 if __name__ == "__main__":
     main()

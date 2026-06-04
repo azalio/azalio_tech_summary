@@ -271,6 +271,40 @@ class TestEventDedupBasic:
             "Telegram:@testingcatalog",
         ]
 
+    def test_mark_reported_suppresses_signal(self, dedup):
+        """Once a cluster's story is published, it must not re-surface as a
+        fresh burst — the 'same news for days' repost."""
+        for src in ("s1", "s2"):
+            dedup.check_and_add("Anthropic releases Claude Opus 4.8", src, f"http://{src}.com")
+        signals = dedup.event_signals()
+        assert len(signals) == 1
+        dedup.mark_reported([signals[0]["cluster_id"]])
+        assert dedup.event_signals() == []
+
+    def test_reported_flag_persists_across_reopen(self, tmp_db):
+        """The reported flag is durable: a later run (fresh EventDedup on the
+        same DB) keeps absorbing the story's headlines but never re-surfaces it."""
+        d1 = EventDedup(db_dir=tmp_db, matching_ttl_hours=48)
+        for src in ("s1", "s2"):
+            d1.check_and_add("Anthropic releases Claude Opus 4.8", src, f"http://{src}.com")
+        d1.mark_reported([d1.event_signals()[0]["cluster_id"]])
+        d1.close()
+
+        d2 = EventDedup(db_dir=tmp_db, matching_ttl_hours=48)
+        # Same story, new sources this run → still dedups into the old cluster…
+        assert d2.check_and_add("Anthropic releases Claude Opus 4.8", "s3", "http://s3.com") is False
+        assert d2.check_and_add("Anthropic releases Claude Opus 4.8", "s4", "http://s4.com") is False
+        # …but is NOT re-offered to the editor as a fresh burst.
+        assert d2.event_signals() == []
+        d2.close()
+
+    def test_default_max_cluster_size_outlives_matching_window(self, tmp_db):
+        """Default cap must sit far above what a hot story accrues in 72h, so a
+        live cluster never 'closes' mid-story and spawns a duplicate."""
+        d = EventDedup(db_dir=tmp_db)
+        assert d.max_cluster_size >= 300
+        d.close()
+
 
 class TestTieredGate:
     def test_high_similarity_no_jaccard_needed(self, dedup):

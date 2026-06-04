@@ -263,7 +263,14 @@ class EventDedup:
         ttl_hours: how long to keep clusters before expiry.
         matching_ttl_hours: a cluster stops accepting new matches this long
             after its FIRST sighting (bounds how long one story stays open).
-        max_cluster_size: clusters at/above this size stop matching.
+        max_cluster_size: runaway safety valve — clusters at/above this size
+            stop matching. Keep it well above what a hot story accrues inside
+            `matching_ttl_hours`, otherwise a still-live cluster "closes" mid-
+            story and the next headline spawns a duplicate cluster that the
+            editor re-posts as new. `matching_ttl_hours` is the real "story
+            closed" gate; the centroid is already frozen by
+            `centroid_update_limit`, so a large cluster neither drifts nor costs
+            more than one dot product to match.
         centroid_update_limit: stop updating the running-mean centroid after
             this many items (prevents slow topic drift on huge clusters).
         dry_run: if True, log duplicates but do not skip.
@@ -279,7 +286,7 @@ class EventDedup:
         anchor_overlap_conflict: float = 0.45,
         ttl_hours: int = 168,
         matching_ttl_hours: int = 72,
-        max_cluster_size: int = 50,
+        max_cluster_size: int = 300,
         centroid_update_limit: int = 10,
         dry_run: bool = False,
     ):
@@ -342,6 +349,12 @@ class EventDedup:
         if "numbers_json" not in existing:
             self._conn.execute(
                 "ALTER TABLE event_clusters ADD COLUMN numbers_json TEXT")
+        # reported_at: set once a cluster's story has been posted to the channel,
+        # so event_signals never re-surfaces an already-published story as a
+        # fresh burst on a later run (the "same news for days" failure).
+        if "reported_at" not in existing:
+            self._conn.execute(
+                "ALTER TABLE event_clusters ADD COLUMN reported_at REAL")
         self._conn.commit()
 
     def _cleanup(self):
@@ -379,11 +392,11 @@ class EventDedup:
         rows = self._conn.execute(
             "SELECT cluster_id, centroid, tokens_json, last_seen, "
             "item_count, representative_title, first_seen, "
-            "anchors_json, numbers_json FROM event_clusters"
+            "anchors_json, numbers_json, reported_at FROM event_clusters"
         ).fetchall()
         clusters = []
         for (cid, centroid_blob, tokens_json, last_seen, count, title,
-             first_seen, anchors_json, numbers_json) in rows:
+             first_seen, anchors_json, numbers_json, reported_at) in rows:
             # Legacy rows have no anchors/numbers yet — derive from the title so
             # they still match until the next sighting backfills them.
             if anchors_json:
@@ -403,6 +416,7 @@ class EventDedup:
                 "first_seen": first_seen,
                 "count": count,
                 "title": title,
+                "reported": reported_at is not None,
             })
         return clusters
 
@@ -447,6 +461,7 @@ class EventDedup:
             "last_seen": ts,
             "count": 1,
             "title": title,
+            "reported": False,
         }
         self._clusters.append(cluster)
         return cluster
@@ -603,6 +618,11 @@ class EventDedup:
             cluster = clusters_by_id.get(cluster_id)
             if not cluster:
                 continue
+            # Already published in an earlier run: keep absorbing its headlines
+            # (dedup still works), but don't hand it to the editor again as a
+            # fresh burst — that re-posted the same story on consecutive days.
+            if cluster.get("reported"):
+                continue
             source_burst = "high" if observations >= 3 or source_count >= 3 else "medium"
             signals.append({
                 "cluster_id": cluster_id,
@@ -626,6 +646,29 @@ class EventDedup:
             reverse=True,
         )
         return signals[:max_events]
+
+    def mark_reported(self, cluster_ids) -> None:
+        """Flag clusters whose story has just been published.
+
+        Call this only after a successful channel post, with the cluster_ids the
+        editor was given as event_signals. Once flagged, event_signals() will
+        not re-surface them on later runs, so a multi-day story isn't re-posted
+        as fresh each day. Items still keep deduping into the cluster normally.
+        """
+        ids = [int(cid) for cid in cluster_ids]
+        if not ids:
+            return
+        ts = time.time()
+        self._conn.executemany(
+            "UPDATE event_clusters SET reported_at=? WHERE cluster_id=? "
+            "AND reported_at IS NULL",
+            [(ts, cid) for cid in ids],
+        )
+        self._conn.commit()
+        flagged = set(ids)
+        for cluster in self._clusters:
+            if cluster["id"] in flagged:
+                cluster["reported"] = True
 
     def stats(self) -> dict:
         total_clusters = len(self._clusters)
