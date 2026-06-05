@@ -5,13 +5,13 @@
 `azalio_tech_summary` is a personal hourly technology-news digest bot. It
 collects candidate headlines from RSS feeds, REST APIs, Reddit, Telegram
 channels, Hacker News, Habr, GitHub Trending, HuggingFace Daily Papers, arXiv,
-Claude release notes, NVD/CISA/security feeds, Google News, and optional
-external collector scripts. It removes repeated stories with URL and semantic
-event deduplication, asks an LLM CLI to write a compact Russian digest, and
-posts the result to Telegram. Current-run event clusters are also surfaced into
-the prompt as ranking-only source-burst signals so repeated coverage from
-multiple sources can influence section priority without becoming an emitted
-fact by itself.
+Claude release notes, NVD/CISA/security feeds, Google News, applied AI/SRE
+engineering feeds, and optional external collector scripts. It removes repeated
+stories with URL and semantic event deduplication, asks an LLM CLI to write a
+compact Russian digest, and posts the result to Telegram. Current-run event
+clusters are also surfaced into the prompt as ranking-only source-burst signals
+so repeated coverage from multiple sources can influence section priority
+without becoming an emitted fact by itself.
 
 The repository is intentionally small: the production path is a single Python
 process started from `main.py`, with persistent local state under
@@ -34,8 +34,14 @@ In scope:
 - Formatting Markdown-like LLM output as Telegram-compatible HTML and splitting
   long digests into multiple Telegram messages, including line-bounded splits
   for oversized topic sections.
+- Skipping Telegram publication when the editor emits the explicit quiet-hour
+  sentinel for a genuinely empty news window, while still committing seen URLs.
+- Recording append-only editor input/output audit rows for later filter review.
 - Deploying the source files to a single remote host via `make deploy`.
-- Installing idempotent remote cron entries and logrotate configuration.
+- Installing idempotent remote cron entries and logrotate configuration,
+  including rotation for the editor audit log.
+- Managing Telegram-channel config with helper scripts that merge channel lists
+  into `.env` and smoke-check channel readability on the remote host.
 - Snapshotting and restoring remote `.env` plus workspace state.
 
 Out of scope:
@@ -73,17 +79,20 @@ SQLite databases, raw collector handoff JSON, and the previous digest text.
 - `main.py` orchestrates the run. It loads `.env`, initializes `EventDedup` and
   `Collectors`, calls each collector in order, builds `VIBE_PROMPT`, invokes the
   LLM through `VibeCore`, posts the result, and stores the latest summary. It
-  also formats current-run `event_signals` from semantic clusters and injects
-  them into the prompt as ranking-only context.
+  also formats current-run `event_signals` from semantic clusters, injects them
+  into the prompt as ranking-only context, logs editor input/output rows to
+  `digest_runs.jsonl`, and handles the quiet-hour no-post sentinel.
 - `collectors.py` owns source integrations. It contains RSS helpers, URL
   normalization, `sent_posts` URL deduplication, optional API-key collectors,
   source-specific formatting for the prompt payload, and handoff points for
   bundled Reddit/Telegram fetcher subprocesses.
 - `dedup.py` owns semantic event clustering. It uses
   `intfloat/multilingual-e5-small` embeddings, token extraction, entity aliasing,
-  Jaccard overlap, SQLite persistence, TTL cleanup, matching windows, and
-  cluster-size guards. It tracks clusters touched during the current process and
-  exposes high/medium source-burst summaries through `event_signals()`.
+  language-agnostic anchor overlap, year/version conflict checks, running-mean
+  centroids with a freeze limit, SQLite persistence, TTL cleanup, matching
+  windows, and cluster-size guards. It tracks clusters touched during the
+  current process, marks already reported clusters, and exposes high/medium
+  source-burst summaries through `event_signals()`.
 - `core.py` owns LLM CLI execution and Telegram delivery. It discovers Gemini or
   Codex from explicit env vars or PATH, deduplicates resolved binaries, runs
   Codex through `codex exec --skip-git-repo-check -o <tmpfile> -` so cron can
@@ -96,6 +105,8 @@ SQLite databases, raw collector handoff JSON, and the previous digest text.
   configured Telegram channels.
 - `deploy/install-cron.sh` and `deploy/install-logrotate.sh` install the
   remote scheduler and log rotation entries used by `Makefile` targets.
+- `deploy/merge_channels.py` and `deploy/check_channel.py` are remote operator
+  helpers for channel-list updates and readability checks.
 - `test_dedup.py` covers headline normalization, token extraction,
   canonicalization, event clustering behavior, TTL handling, and collector
   recap filtering.
@@ -116,8 +127,9 @@ SQLite databases, raw collector handoff JSON, and the previous digest text.
    script is missing.
 5. URL deduplication queues normalized links in an in-memory pending set;
    they are not written to `sent_posts` until the digest is successfully
-   posted (see step 9). Semantic deduplication creates or updates event
-   clusters for non-duplicate titles eagerly during this step.
+   posted or the editor returns an explicit quiet-hour no-post decision.
+   Semantic deduplication creates or updates event clusters for non-duplicate
+   titles eagerly during this step.
 6. `main.py` inserts the previous digest and new source data into `VIBE_PROMPT`.
 7. `main.py` formats current-run event signals and includes them in the prompt
    as ranking-only context. In dry-run mode, the prompt is printed. Otherwise
@@ -128,16 +140,19 @@ SQLite databases, raw collector handoff JSON, and the previous digest text.
 8. `VibeCore.send_tg` formats the digest, posts it to Telegram, splits it by
    topic section when it exceeds the Telegram message limit, line-splits any
    single oversized section, and returns whether every part was delivered.
-9. If no LLM-formatted digest is returned, the bot sends an operator failure
+9. `main.py` appends the editor input/output record to
+   `memory/digest_runs.jsonl`. If the digest is the quiet-hour sentinel, it
+   skips Telegram publication, commits URL marks, and leaves the previous real
+   digest as the next run's context anchor.
+10. If no LLM-formatted digest is returned, the bot sends an operator failure
    notice to the default chat and exits without posting raw collector lines or
    committing URL state.
-10. On a successful digest send, `Collectors.commit_seen` persists the pending
+11. On a successful digest send, `Collectors.commit_seen` persists the pending
    URL marks to `sent_posts` and the posted text is written to
    `last_intel_summary.txt` for the next run. On delivery failure, both are
    skipped so the next run's URL dedup gate sees the same items as un-seen.
-   Semantic dedup state from step 5 is still committed eagerly, so a rerun may
-   still filter the items as event duplicates — deferring semantic-dedup commits
-   is out of scope for this design.
+   Successfully posted source-burst clusters are marked reported so they do not
+   keep re-entering `event_signals()` on later runs.
 
 ### Deployment Flow
 
@@ -150,30 +165,40 @@ responsibilities.
 `make install-cron` uploads `deploy/install-cron.sh` and writes managed hourly
 cron entries for `main.py` and `standalone_reddit_digest.py`. `make
 install-logrotate` uploads `deploy/install-logrotate.sh` and installs weekly
-rotation for `main.log` and `reddit.log`. `make backup` snapshots remote
-`.env` plus `workspace/`; `make restore BACKUP=...` extracts that archive onto
-the target before the next run.
+rotation for `main.log`, `reddit.log`, and `workspace/memory/digest_runs.jsonl`.
+`make add-channels CHANNELS=...` backs up remote `.env` and merges channel
+values through `deploy/merge_channels.py`; `make check-channels CHANNELS=...`
+runs the Telethon readability probe from `deploy/check_channel.py`. `make
+backup` snapshots remote `.env` plus `workspace/`; `make restore BACKUP=...`
+extracts that archive onto the target before the next run.
 
 ## Source of Truth
 
 - Collector behavior and source list: `collectors.py`.
 - Prompt policy and orchestration order: `main.py`.
 - Semantic deduplication rules and schema: `dedup.py`.
+- Editor decision audit rows: `${VIBE_WORKSPACE}/memory/digest_runs.jsonl`.
 - Telegram and LLM CLI integration: `core.py`.
 - Required and optional runtime configuration: `env.example`.
 - Setup, deployment, and operational notes: `README.md`.
 - Remote scheduler/log rotation behavior: `deploy/install-cron.sh`,
   `deploy/install-logrotate.sh`, and `Makefile`.
+- Channel-list operator helpers: `deploy/merge_channels.py` and
+  `deploy/check_channel.py`.
 
 ## Cross-cutting Concepts
 
 - Two-stage deduplication: normalized URL history catches exact repeats, while
-  event clusters catch semantically repeated stories across sources.
+  event clusters catch semantically repeated stories across sources. The event
+  gate combines embeddings with anchor overlap, typed year/version conflict
+  checks, running-mean centroids, cluster-size guards, and reported-cluster
+  memory so already published source bursts do not keep coming back.
 - Source-burst ranking: current-run event clusters with repeated observations or
   multiple sources can promote a story during selection, but their counts are
   prompt hints rather than publication facts.
 - Local state: all runtime memory is file-backed under `VIBE_WORKSPACE`, mostly
-  through SQLite plus previous digest text and fetcher handoff JSON files.
+  through SQLite plus previous digest text, editor audit JSONL, and fetcher
+  handoff JSON files.
 - Graceful degradation: missing optional API keys, missing optional scripts, and
   individual source fetch failures usually return an empty collector result
   instead of aborting the run.
@@ -185,7 +210,8 @@ the target before the next run.
   Telegram HTML at the edge, with plain-text fallback on delivery errors.
 - Publication safety boundary: the public channel receives only an LLM-formatted
   digest. Empty LLM output produces an operator alert and leaves pending source
-  URLs available for retry instead of dumping raw collector payloads.
+  URLs available for retry instead of dumping raw collector payloads. A separate
+  quiet-hour sentinel is treated as a successful no-post decision, not a failure.
 
 ## Deployment/Operations
 
@@ -209,8 +235,11 @@ install the scheduler/log retention pieces after deploy. `make backup` and
 - Semantic deduplication depends on an in-process E5 model and local SQLite
   state; the first run is heavy and state loss resets duplicate memory.
 - Semantic event clusters are committed while collectors run, before Telegram
-  delivery. URL marks are deferred until successful send, but an LLM or
-  delivery failure can still leave semantic state ahead of public delivery.
+  delivery. URL marks are deferred until successful send or explicit quiet-hour
+  no-post, but an LLM or delivery failure can still leave semantic state ahead
+  of public delivery.
+- The quiet-hour sentinel depends on the LLM following the prompt exactly; if it
+  is emitted incorrectly, a legitimate small digest may be skipped.
 - HTML formatting uses regular expressions, which can fail on malformed or
   unexpected Markdown from the LLM.
 - Deployment is file-copy based and leaves dependency installation, secrets,
@@ -222,17 +251,19 @@ No ADR documents are present in this repository as of this review.
 
 ## Freshness
 
-Reviewed on 2026-05-29 against repository evidence in `README.md`, `main.py`,
+Reviewed on 2026-06-05 against repository evidence in `README.md`, `main.py`,
 `collectors.py`, `dedup.py`, `core.py`, `standalone_reddit_digest.py`,
 `standalone_telegram_digest.py`, `test_dedup.py`, `env.example`,
-`env.deploy.example`, `Makefile`, `deploy/install-cron.sh`, and
-`deploy/install-logrotate.sh`.
+`env.deploy.example`, `Makefile`, `deploy/install-cron.sh`,
+`deploy/install-logrotate.sh`, `deploy/merge_channels.py`, and
+`deploy/check_channel.py`.
 
-Current delta captured: source coverage includes Telegram channels, Claude
-release notes, GitHub Trending README snippets, broader arXiv/security/cloud
-feeds, and NVD/CISA-style security sources; each digest message appends a
-channel footer; deploy operations include managed cron, logrotate, backup, and
-restore targets. The current prompt now enforces a Russian technical style,
-uses current-run source-burst event signals as ranking hints, preserves short
-tokens such as "AI" in event overlap checks, and prefers Codex before Gemini on
-the production host because Codex has the cron-safe final-output path.
+Current delta captured: source coverage includes the newer applied-AI,
+SRE-depth, engineering-blog, r/singularity, and channel additions; the editor
+prompt now separates applied engineering from fundamental AI/ML noise while
+allowing empirical AI-agent behavior stories into the science lane; quiet hours
+skip Telegram posting via an explicit sentinel; editor input/output is recorded
+in `digest_runs.jsonl`; channel-list updates and readability checks have
+dedicated deploy helpers; and semantic deduplication now combines anchor
+overlap, year/version conflict checks, centroid freezing, cluster size caps, and
+reported-cluster memory to avoid reposting the same story for days.
