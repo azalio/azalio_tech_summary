@@ -12,8 +12,10 @@ REMOTE_DIR ?= /home/azalio/azalio_tech_summary
 
 SSH_OPTS := $(if $(SSH_JUMP),-J $(SSH_JUMP))
 DEPLOY_FILES := main.py core.py collectors.py dedup.py \
+                ranking.py health.py eval_digest.py \
                 standalone_reddit_digest.py standalone_telegram_digest.py \
-                test_dedup.py requirements.txt
+                test_dedup.py test_ranking.py test_health.py test_eval_digest.py \
+                requirements.txt
 
 BACKUP_DIR ?= backups
 BACKUP_FILE := $(BACKUP_DIR)/$(shell date +%F).tgz
