@@ -296,6 +296,12 @@ def process_text_subs(reddit, conn):
                     "url": f"https://reddit.com{post.permalink}",
                     "external_url": external_url,
                     "score": post.score,
+                    # Real engagement, surfaced to the digest so the editor (and
+                    # ranking.py) can weigh "what people actually engage with"
+                    # rather than just front-page presence. PRAW exposes these
+                    # directly; guarded with getattr for forward-compat.
+                    "num_comments": getattr(post, "num_comments", 0),
+                    "upvote_ratio": getattr(post, "upvote_ratio", None),
                     "text": html.unescape(text) if text else "",
                     "top_comments": top_comments
                 })

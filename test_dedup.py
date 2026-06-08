@@ -917,3 +917,56 @@ class TestSplitOversizedSection:
         assert len(chunks) == 1
         # The long line is preserved (no truncation)
         assert "z" * 5000 in chunks[0]
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Lexical pre-dedup fast-path (item 6): skip the E5 encode for re-syndicated
+# identical headlines, while never short-circuiting distinct events.
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestLexicalPreDedup:
+    HEADLINE = "Kubernetes 1.31 release adds native sidecar containers and security fixes"
+
+    def test_identical_headline_skips_embedding(self, tmp_db):
+        d = EventDedup(db_dir=tmp_db, matching_ttl_hours=48)
+        assert d.check_and_add(self.HEADLINE, "src1", "u1") is True
+        # Exact re-syndication: dropped via the lexical fast-path, no encode.
+        assert d.check_and_add(self.HEADLINE, "src2", "u2") is False
+        assert d.stats()["lexical_skips"] == 1
+        d.close()
+
+    def test_extra_word_does_not_lexically_merge(self, tmp_db):
+        """An added word drops Jaccard below 0.90 so the lexical path must NOT
+        fire (the embedding gate decides instead). Guards the GPT-5 vs GPT-5
+        mini false-merge class."""
+        d = EventDedup(db_dir=tmp_db, matching_ttl_hours=48)
+        d.check_and_add("OpenAI releases GPT-5 model for enterprise customers today", "s1", "u1")
+        d.check_and_add("OpenAI releases GPT-5 mini distilled model for enterprise customers today soon", "s2", "u2")
+        assert d.stats()["lexical_skips"] == 0
+        d.close()
+
+    def test_short_titles_never_lexical(self, tmp_db):
+        """Below min_lexical_tokens the fast-path is disabled to avoid short-
+        title collisions (E5 still handles real dups)."""
+        d = EventDedup(db_dir=tmp_db, matching_ttl_hours=48)
+        d.check_and_add("Cloudflare outage resolved", "s1", "u1")
+        d.check_and_add("Cloudflare outage resolved", "s2", "u2")
+        assert d.stats()["lexical_skips"] == 0
+        d.close()
+
+    def test_lexical_can_be_disabled(self, tmp_db):
+        d = EventDedup(db_dir=tmp_db, matching_ttl_hours=48, lexical_jaccard_min=2.0)
+        d.check_and_add(self.HEADLINE, "s1", "u1")
+        d.check_and_add(self.HEADLINE, "s2", "u2")
+        assert d.stats()["lexical_skips"] == 0
+        d.close()
+
+    def test_lexical_skip_still_absorbs_into_cluster(self, tmp_db):
+        """A lexical dup must still join the cluster (count grows, signals fire)
+        even though no embedding/item row is written."""
+        d = EventDedup(db_dir=tmp_db, matching_ttl_hours=48)
+        d.check_and_add(self.HEADLINE, "src1", "u1")
+        d.check_and_add(self.HEADLINE, "src2", "u2")
+        cluster = d._clusters[0]
+        assert cluster["count"] == 2
+        d.close()

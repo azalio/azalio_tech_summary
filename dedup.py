@@ -288,6 +288,8 @@ class EventDedup:
         matching_ttl_hours: int = 72,
         max_cluster_size: int = 300,
         centroid_update_limit: int = 10,
+        lexical_jaccard_min: float = 0.90,
+        min_lexical_tokens: int = 5,
         dry_run: bool = False,
     ):
         self.gray_zone_min = gray_zone_min if gray_zone_min is not None else match_threshold
@@ -298,6 +300,15 @@ class EventDedup:
         self.matching_ttl_hours = matching_ttl_hours
         self.max_cluster_size = max_cluster_size
         self.centroid_update_limit = centroid_update_limit
+        # Cheap lexical fast-path: a near-identical title (token Jaccard at/above
+        # this, vs a live cluster's representative title) is treated as a dup
+        # WITHOUT computing an E5 embedding. Jaccard is symmetric, so an extra
+        # word on either side ("GPT-5" vs "GPT-5 mini": 3/4 = 0.75) falls below
+        # 0.90 and is left to the embedding gate — only re-syndicated identical
+        # headlines short-circuit. min_lexical_tokens guards against short-title
+        # collisions. Set lexical_jaccard_min > 1.0 to disable.
+        self.lexical_jaccard_min = lexical_jaccard_min
+        self.min_lexical_tokens = min_lexical_tokens
         self.dry_run = dry_run
 
         os.makedirs(db_dir, exist_ok=True)
@@ -308,7 +319,7 @@ class EventDedup:
 
         # Load active clusters into memory
         self._clusters = self._load_clusters()
-        self._stats = {"checked": 0, "duplicates": 0, "added": 0}
+        self._stats = {"checked": 0, "duplicates": 0, "added": 0, "lexical_skips": 0}
         self._run_cluster_hits = {}
         self._run_cluster_sources = {}
 
@@ -559,6 +570,55 @@ class EventDedup:
             return (best_cluster, best_emb_sim, best_overlap)
         return None
 
+    def _find_lexical_duplicate(self, tokens: set, numbers: dict,
+                                ts: float) -> Optional[dict]:
+        """Cheap pre-embedding duplicate check against live clusters.
+
+        Returns a cluster whose representative title is near-identical (token
+        Jaccard >= lexical_jaccard_min) to the incoming title, with no year/
+        version conflict — i.e. a re-syndicated headline we can drop without
+        paying for an E5 encode. Conservative by design (high threshold +
+        min-token floor) so it only ever confirms obvious dups and never
+        false-merges distinct events; anything uncertain falls through to the
+        embedding gate. Returns None when disabled or no confident match.
+        """
+        if self.lexical_jaccard_min > 1.0:
+            return None
+        if len(tokens) < self.min_lexical_tokens:
+            return None
+        matching_cutoff = ts - self.matching_ttl_hours * 3600
+        for cluster in self._clusters:
+            if cluster["first_seen"] < matching_cutoff:
+                continue
+            if cluster["count"] >= self.max_cluster_size:
+                continue
+            title_tokens = cluster.get("_title_tokens")
+            if title_tokens is None:
+                title_tokens = extract_tokens(normalize_headline(cluster["title"] or ""))
+                cluster["_title_tokens"] = title_tokens
+            if len(title_tokens) < self.min_lexical_tokens:
+                continue
+            if jaccard_similarity(tokens, title_tokens) < self.lexical_jaccard_min:
+                continue
+            if number_conflict(numbers, cluster["numbers"]):
+                continue
+            return cluster
+        return None
+
+    def _absorb_lexical(self, cluster: dict, anchors: set,
+                        numbers: dict, ts: float):
+        """Fold a lexical-duplicate headline into a cluster without an embedding.
+
+        Mirrors _add_to_cluster minus the centroid blend (we have no vector).
+        Safe: the centroid is frozen after centroid_update_limit items anyway,
+        and a near-identical headline would barely move it."""
+        cluster["anchors"] |= anchors
+        cluster["numbers"]["year"] |= numbers["year"]
+        cluster["numbers"]["version"] |= numbers["version"]
+        cluster["last_seen"] = max(cluster["last_seen"], ts)
+        cluster["count"] += 1
+        self._save_cluster(cluster)
+
     # ── Public API (compatible with SemanticDedup) ───────────────────
 
     def check_and_add(self, title: str, source: str, url: str,
@@ -571,11 +631,27 @@ class EventDedup:
         self._stats["checked"] += 1
         ts = time.time()
 
-        text = self._make_text(title, description)
-        vec = self._encode(text)
         tokens = extract_tokens(normalize_headline(title))
         anchors = extract_anchors(title)
         numbers = extract_numbers(title)
+
+        # Cheap lexical fast-path: skip the E5 encode for re-syndicated headlines.
+        lexical = self._find_lexical_duplicate(tokens, numbers, ts)
+        if lexical is not None:
+            self._stats["duplicates"] += 1
+            self._stats["lexical_skips"] += 1
+            logger.info(
+                "LEXICAL DUPLICATE: [%s] %r  ~=  cluster #%d %r",
+                source, title[:80], lexical["id"], (lexical["title"] or "")[:80],
+            )
+            self._absorb_lexical(lexical, anchors, numbers, ts)
+            self._mark_touched(lexical, source)
+            if self.dry_run:
+                return True
+            return False
+
+        text = self._make_text(title, description)
+        vec = self._encode(text)
 
         match = self._find_best_cluster(vec, anchors, numbers, ts)
 

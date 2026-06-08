@@ -11,6 +11,8 @@ from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse, urlunparse, parse_qs, urlencode
 from dotenv import load_dotenv
 
+from ranking import Candidate
+
 load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env'))
 
 class Collectors:
@@ -30,6 +32,13 @@ class Collectors:
         # "marked but never published" data-loss class (see GitHub issue #2).
         self._pending_marks = []
         self._pending_marks_set = set()
+
+        # Structured candidates registered alongside the free-text blob each
+        # collector returns. main.py fuses these into a ranked priority index
+        # (ranking.py) and derives per-collector item counts for source-health
+        # checks (health.py). Populated via _add_candidate at every emit point.
+        self.candidates: list[Candidate] = []
+        self.source_counts: dict = {}
 
         # Paths to JSONs
         self.reddit_raw_json = os.path.join(workspace, "memory/reddit_ai_raw.json")
@@ -105,6 +114,43 @@ class Collectors:
         filtered = {k: v for k, v in qs.items() if k.lower() not in skip}
         query = urlencode(sorted(filtered.items()), doseq=True) if filtered else ""
         return urlunparse(("https", netloc, path, "", query, ""))
+
+    def _add_candidate(self, collector, source, title, url, line="",
+                       engagement=None, author=None, freshness=0.5, cvss=None):
+        """Register a structured candidate for ranking + health tracking.
+
+        Called once per emitted item, in parallel with the text line that goes
+        into the LLM blob. `collector` is the section/collector name (the key
+        into ranking weights and health baselines); `source` is the concrete
+        per-item feed/subreddit used for the diversity cap. Never raises — a
+        bookkeeping error must not break collection."""
+        try:
+            self.candidates.append(Candidate(
+                collector=collector, source=source, title=title or "", url=url or "",
+                line=line, engagement=engagement, author=author,
+                freshness=freshness, cvss=cvss,
+            ))
+            self.source_counts[collector] = self.source_counts.get(collector, 0) + 1
+        except Exception as e:
+            print(f"  _add_candidate error: {e}")
+
+    @staticmethod
+    def _freshness_from_struct_time(pub, max_age_days):
+        """Map an RSS published_parsed time tuple to a 0..1 recency score.
+
+        1.0 = just published, decaying linearly to 0.0 at max_age_days. Returns
+        0.5 (neutral) when the entry carries no usable timestamp."""
+        if not pub:
+            return 0.5
+        import time as _time
+        try:
+            age = _time.time() - _time.mktime(pub)  # type: ignore[arg-type]
+        except (TypeError, ValueError, OverflowError):
+            return 0.5
+        span = max_age_days * 86400
+        if span <= 0:
+            return 0.5
+        return max(0.0, min(1.0, 1.0 - age / span))
 
     def _is_seen(self, url):
         if not url: return False
@@ -242,9 +288,16 @@ class Collectors:
                     summary = str(entry.get("summary") or "")[:300].strip()
                     if self._is_semantic_dup(title, f"{source_label}:{name}", link, summary):
                         continue
-                    content += f"[{name}] {title} - Link: {link}\n"
+                    line = f"[{name}] {title} - Link: {link}\n"
+                    content += line
                     if summary:
                         content += f"  {summary}\n"
+                    # RSS feeds carry no engagement metric; freshness from the
+                    # entry's publish date is the ranking signal here.
+                    self._add_candidate(
+                        source_label, name, title, link, line=line.strip(),
+                        freshness=self._freshness_from_struct_time(pub, max_age_days),
+                    )
                     count += 1
                     per_feed += 1
                     if per_feed >= max_per_feed:
@@ -268,14 +321,41 @@ class Collectors:
             url = p.get('url', 'No link')
             if self._is_seen(url):
                 continue
-            source = f"Reddit:r/{p.get('subreddit', '?')}"
+            sub = p.get('subreddit', '?')
+            source = f"Reddit:r/{sub}"
             self._mark_seen(url, source)
             desc = p.get('text', '')[:300]
             if self._is_semantic_dup(title, source, url, desc):
                 continue
-            content += f"\n[r/{p['subreddit']}] {title}\n"
+            # Surface the real engagement the fetcher already collected (score,
+            # comment count, upvote ratio) so the editor and ranking weigh what
+            # the community actually engaged with, not just front-page presence.
+            score = p.get('score') or 0
+            num_comments = p.get('num_comments') or 0
+            ratio = p.get('upvote_ratio')
+            metrics = []
+            if score:
+                metrics.append(f"{score} upvotes")
+            if num_comments:
+                metrics.append(f"{num_comments} comments")
+            if ratio:
+                metrics.append(f"{int(ratio * 100)}% upvoted")
+            metric_str = f" ({', '.join(metrics)})" if metrics else ""
+            content += f"\n[r/{sub}] {title}{metric_str}\n"
             content += f"Link: {url}\n"
             if p.get('text'): content += f"Context: {p['text'][:400]}\n"
+            # Top comment as a community-signal snippet (the fetcher sorts by top).
+            top = p.get('top_comments') or []
+            if top:
+                c0 = top[0]
+                body = " ".join((c0.get('body') or "").split())[:200]
+                if body:
+                    content += f"Top comment ({c0.get('score', 0)} pts): {body}\n"
+            self._add_candidate(
+                "Reddit", f"r/{sub}", title, url,
+                line=f"[r/{sub}] {title}{metric_str} - Link: {url}",
+                engagement=float(score) if score else None, freshness=0.8,
+            )
         return content
 
     def collect_telegram(self):
@@ -332,6 +412,11 @@ class Collectors:
             content += f"Link: {url}\n"
             if text and text != title:
                 content += f"Context: {text[:400]}\n"
+            self._add_candidate(
+                "Telegram", f"@{channel}", title, url,
+                line=f"[@{channel}] {title} - Link: {url}",
+                engagement=float(p.get("views") or 0) or None, freshness=0.8,
+            )
             count += 1
         return content if count > 0 else ""
 
@@ -356,6 +441,8 @@ class Collectors:
             if self._is_semantic_dup(title, f"market:{source_name}", link or ""):
                 continue
             content += f"- {title} ({source_name}) - Link: {link}\n"
+            self._add_candidate("MARKET NEWS", source_name, title, link or "",
+                                line=f"- {title} ({source_name}) - Link: {link}")
             count += 1
             if count >= 20: break
         return content if count > 0 else ""
@@ -384,6 +471,8 @@ class Collectors:
                     continue
                 content += f"[{source}] {title} - Link: {link}\n"
                 if story.get('summary'): content += f"  {story['summary'][:200]}\n"
+                self._add_candidate("RUSSIAN NEWS FEED", source, title, link or "",
+                                    line=f"[{source}] {title} - Link: {link}")
                 count += 1
                 if count >= 5: break
         return content if count > 0 else ""
@@ -421,6 +510,11 @@ class Collectors:
             stars = p.get("githubStars", 0)
             extra = f", {stars} GH stars" if stars else ""
             content += f"- {title} ({upvotes} upvotes{extra}) - Link: {paper_url}\n"
+            self._add_candidate(
+                "HFPapers", "HuggingFace", title, paper_url,
+                line=f"- {title} ({upvotes} upvotes{extra}) - Link: {paper_url}",
+                engagement=float(upvotes), freshness=0.8,
+            )
             count += 1
             if count >= 15:
                 break
@@ -453,6 +547,11 @@ class Collectors:
             if self._is_semantic_dup(title, "HackerNews", story_url):
                 continue
             content += f"- {title} ({points} pts) - Link: {story_url}\n"
+            self._add_candidate(
+                "HackerNews", "Hacker News", title, story_url,
+                line=f"- {title} ({points} pts) - Link: {story_url}",
+                engagement=float(points) if points else None, freshness=0.85,
+            )
             count += 1
             if count >= 20:
                 break
@@ -598,6 +697,11 @@ class Collectors:
             if self._is_semantic_dup(title, "Habr", habr_url, desc):
                 continue
             content += f"- {title} ({score} pts) - Link: {habr_url}\n"
+            self._add_candidate(
+                "Habr", "Habr", title, habr_url,
+                line=f"- {title} ({score} pts) - Link: {habr_url}",
+                engagement=float(score) if score else None, freshness=0.8,
+            )
             count += 1
             if count >= 10:
                 break
@@ -672,6 +776,11 @@ class Collectors:
             if readme:
                 line += f"  README: {readme}\n"
             content += line
+            self._add_candidate(
+                "GitHubTrending", owner_repo, title, repo_url,
+                line=f"[{owner_repo}] {desc} - Link: {repo_url}",
+                engagement=float(stars_today) if stars_today else None, freshness=0.7,
+            )
             count += 1
 
         return content if count > 0 else ""
@@ -813,6 +922,11 @@ class Collectors:
                 if self._is_semantic_dup(plain, "ClaudePlatform", item_url):
                     continue
                 content += f"- {plain}\n"
+                self._add_candidate(
+                    "ClaudePlatform", "Claude Release Notes", plain,
+                    "https://platform.claude.com/docs/en/release-notes/overview",
+                    line=f"- {plain}", freshness=0.9,
+                )
                 count += 1
 
         return content if count > 0 else ""
@@ -864,6 +978,8 @@ class Collectors:
                 if self._is_semantic_dup(title, f"NewsAPI:{label}", link, desc):
                     continue
                 content += f"[{label}:{source_name}] {title} - Link: {link}\n"
+                self._add_candidate("NewsAPI", source_name or label, title, link,
+                                    line=f"[{label}:{source_name}] {title} - Link: {link}")
                 count += 1
                 if count >= 20:
                     return content
@@ -995,6 +1111,11 @@ class Collectors:
                 continue
             short_desc = it["desc"][:400].strip()
             content += f"- [{it['id']}] CVSS {it['score']} {it['severity']} — {short_desc} - Link: {it['url']}\n"
+            self._add_candidate(
+                "NVD", it["id"], f"{it['id']} {short_desc[:80]}", it["url"],
+                line=f"- [{it['id']}] CVSS {it['score']} {it['severity']} — {short_desc} - Link: {it['url']}",
+                cvss=float(it["score"]), freshness=0.9,
+            )
             count += 1
         return content if count > 0 else ""
 
@@ -1059,6 +1180,8 @@ class Collectors:
                     if self._is_semantic_dup(title, f"finnhub:{source}", link, desc):
                         continue
                     content += f"[{source}] {title} - Link: {link}\n"
+                    self._add_candidate("FINNHUB MARKET NEWS", source or "Finnhub", title, link,
+                                        line=f"[{source}] {title} - Link: {link}")
                     count += 1
                     if count >= 15:
                         break

@@ -85,14 +85,32 @@ SQLite databases, raw collector handoff JSON, and the previous digest text.
 - `collectors.py` owns source integrations. It contains RSS helpers, URL
   normalization, `sent_posts` URL deduplication, optional API-key collectors,
   source-specific formatting for the prompt payload, and handoff points for
-  bundled Reddit/Telegram fetcher subprocesses.
+  bundled Reddit/Telegram fetcher subprocesses. Every collector also registers a
+  structured `ranking.Candidate` per emitted item (with source-native engagement
+  where available) and increments per-collector item counts for source-health
+  tracking.
+- `ranking.py` fuses the structured candidates into a single diversity-capped
+  priority index handed to the editor as a ranking-only hint. It normalizes each
+  source's engagement metric (HN points, Reddit score, Habr/HF upvotes, GitHub
+  stars/day, Telegram views, CVSS) onto a common log axis, applies weighted
+  reciprocal-rank fusion across source streams, and enforces hard per-source and
+  per-author caps.
+- `health.py` keeps a rolling per-collector item-count baseline
+  (`source_health.json`) and flags silent failures — a collector that returns
+  nothing when it normally yields items — so dead/blocked feeds surface instead
+  of quietly thinning the digest.
+- `eval_digest.py` is an offline harness over `digest_runs.jsonl` that measures
+  editor behavior across history: ArXiv/HF paper keep-rate (the applied-vs-
+  fundamental AI/ML filter), no-news rate, item counts, and section presence.
 - `dedup.py` owns semantic event clustering. It uses
   `intfloat/multilingual-e5-small` embeddings, token extraction, entity aliasing,
   language-agnostic anchor overlap, year/version conflict checks, running-mean
   centroids with a freeze limit, SQLite persistence, TTL cleanup, matching
-  windows, and cluster-size guards. It tracks clusters touched during the
-  current process, marks already reported clusters, and exposes high/medium
-  source-burst summaries through `event_signals()`.
+  windows, and cluster-size guards. A cheap lexical pre-dedup fast-path
+  (token Jaccard vs a cluster's representative title) drops re-syndicated
+  identical headlines before paying for an E5 encode. It tracks clusters touched
+  during the current process, marks already reported clusters, and exposes
+  high/medium source-burst summaries through `event_signals()`.
 - `core.py` owns LLM CLI execution and Telegram delivery. It discovers Gemini or
   Codex from explicit env vars or PATH, deduplicates resolved binaries, runs
   Codex through `codex exec --skip-git-repo-check -o <tmpfile> -` so cron can
@@ -108,8 +126,10 @@ SQLite databases, raw collector handoff JSON, and the previous digest text.
 - `deploy/merge_channels.py` and `deploy/check_channel.py` are remote operator
   helpers for channel-list updates and readability checks.
 - `test_dedup.py` covers headline normalization, token extraction,
-  canonicalization, event clustering behavior, TTL handling, and collector
-  recap filtering.
+  canonicalization, event clustering behavior, TTL handling, lexical pre-dedup,
+  and collector recap filtering. `test_ranking.py`, `test_health.py`, and
+  `test_eval_digest.py` cover the ranking/health/eval modules (pure, no E5 —
+  runnable anywhere).
 - `Makefile` provides install, test, deploy, cron/logrotate, backup, and
   restore targets.
 
