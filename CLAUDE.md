@@ -36,7 +36,8 @@ ssh "$SSH_TARGET" "cd $REMOTE_DIR && <cmd>"
   drop" — e.g. whether the applied-vs-fundamental AI/ML filter is behaving.
   Rotated by logrotate (monthly, 12 generations); older history is gzipped
   siblings (`digest_runs.jsonl.N.gz`). Inspect with `jq` on the server, e.g.
-  `tail -n 5 …/digest_runs.jsonl | jq -r '.ts, .summary'`.
+  `tail -n 5 …/digest_runs.jsonl | jq -r '.ts, .summary'`, or aggregate it with
+  `eval_digest.py` (see "Ranking, source-health & eval" below).
 
 ## Running & verifying
 
@@ -62,6 +63,41 @@ below 0.78 = new event. Running-mean centroid (frozen after 10 items), cumulativ
 anchors/numbers per cluster, 72h match window. Do not lower `auto_match` below
 ~0.90 — e5-small gives unrelated tech news up to 0.897 similarity (false-merge).
 Thresholds were measured, not guessed; see the memory note on the rationale.
+
+A cheap **lexical fast-path** runs *before* the E5 encode: a re-syndicated
+identical headline (token Jaccard ≥ 0.90 vs a cluster's representative title, ≥5
+tokens, no year/version conflict) is dropped without encoding. It's a precision
+shortcut, NOT a replacement — anything below that bar (perphrase, extra word,
+cross-language) still goes through E5 exactly as before. Tunable/disable via
+`EventDedup(lexical_jaccard_min=…)`; `stats()["lexical_skips"]` counts hits.
+
+## Ranking, source-health & eval
+
+- **Engagement ranking** (`ranking.py`): every collector registers a structured
+  `Candidate` (with source-native engagement — HN pts / Reddit score / Habr+HF
+  upvotes / GitHub stars-day / Telegram views / CVSS). `main.py` fuses them
+  (log-normalized engagement + weighted RRF across sources, per-source cap 4 /
+  per-author cap 3) into a **priority index** injected into the prompt as a
+  `ranking_signal_only` hint — like `event_signals`. The full candidate blob is
+  still passed verbatim, so the index only re-orders attention, never drops a
+  story. Numbers must NOT leak into the digest (prompt rule 6).
+- **Source-health** (`health.py`): **automatic, no action needed.** Tracks a
+  rolling per-collector item count in
+  `$REMOTE_DIR/workspace/memory/source_health.json` and posts a Telegram notice
+  (default chat, title `SOURCE HEALTH`) when a collector returns 0 where it
+  normally yields items — i.e. a silently dead/blocked feed. Warmup: needs
+  ~`HISTORY_WINDOW=24` runs of history and `min_baseline=3` before it will fire,
+  so expect no alerts for ~the first day (and never for env-gated/sparse
+  collectors). Runs only on real runs, not `--dry-run`.
+- **Eval harness** (`eval_digest.py`): **optional diagnostic**, run by hand when
+  you suspect the applied-vs-fundamental AI/ML filter is misbehaving. Reads
+  `digest_runs.jsonl` and reports ArXiv/HF paper keep-rate, no-news rate, item
+  counts. On the server:
+  ```bash
+  ssh "$SSH_TARGET" "cd $REMOTE_DIR && .venv/bin/python eval_digest.py --last 50 --show-kept"
+  # gzipped rotations: zcat …/digest_runs.jsonl.1.gz | … eval_digest.py -
+  ```
+  Pure parsing (no E5/network) — also runnable locally on a copied JSONL.
 
 ## LLM CLI & VPN (important)
 
