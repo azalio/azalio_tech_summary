@@ -21,16 +21,26 @@ import json
 import os
 from statistics import median
 
-# How many recent runs to keep per collector for the rolling baseline. ~24h of
-# hourly runs — long enough to smooth a quiet hour, short enough to adapt when a
-# source's real volume shifts.
-HISTORY_WINDOW = 24
+# How many recent runs to keep per collector for the rolling baseline. ~48h of
+# hourly runs — wide enough that a full day of zero-output (the silent-streak
+# threshold below) doesn't roll the healthy pre-failure history out of the
+# window, so the baseline stays meaningful while a source is down.
+HISTORY_WINDOW = 48
 
 # A collector is only eligible for a silent-failure alert once its baseline
 # (median of recent non-failing runs) is at least this high. Guards against
 # noise: env-gated collectors (no API key) and intrinsically sparse ones sit at
 # baseline 0 and are never flagged for returning 0.
 DEFAULT_MIN_BASELINE = 3
+
+# How many *consecutive* zero-output runs a collector must rack up before it's
+# flagged as a silent failure. One stalled fetch or a genuinely quiet hour
+# zeroes a feed transiently; many feeds (arXiv, RSS) hiccup for an hour or two
+# and recover. At hourly cron this is ~one full day of silence — "wait a day and
+# watch" before crying wolf. Once tripped, the alert re-nags once per
+# min_silent_streak (i.e. daily) so a persistent outage isn't forgotten, rather
+# than every single hour.
+DEFAULT_MIN_SILENT_STREAK = 24
 
 # Optional secondary alert: a steep drop (not to zero) versus baseline. Off by
 # default — zero-output is the high-precision signal; partial drops are noisy.
@@ -58,15 +68,30 @@ def load_baselines(path: str) -> dict:
 
 
 def baseline_value(history: list) -> float:
-    """Representative recent volume for a collector: median of its history.
+    """Representative *healthy* volume for a collector: median of its non-zero runs.
 
-    Median (not mean) so a single zero-output run doesn't drag the baseline down
-    enough to mask a subsequent real failure.
+    Median (not mean) so one outlier run doesn't skew it. Zero-runs are excluded
+    so a long outage doesn't decay the baseline toward 0 and mask the very
+    failure we want to report — the baseline holds at "what this source yields
+    when it works" until the entire window is zeros (no healthy evidence left, at
+    which point returning 0 is no longer surprising and we stop alerting).
     """
-    vals = [v for v in history if v is not None]
+    vals = [v for v in history if v]  # drop None and 0
     if not vals:
         return 0.0
     return float(median(vals))
+
+
+def consecutive_zeros(history: list) -> int:
+    """Length of the run of zero-output runs at the tail of ``history`` — i.e.
+    how long the current silent streak is, not counting the run about to happen."""
+    n = 0
+    for v in reversed(history):
+        if v == 0:
+            n += 1
+        else:
+            break
+    return n
 
 
 def detect_anomalies(
@@ -74,12 +99,19 @@ def detect_anomalies(
     run_counts: dict,
     *,
     min_baseline: int = DEFAULT_MIN_BASELINE,
+    min_silent_streak: int = DEFAULT_MIN_SILENT_STREAK,
     drop_ratio: float = DEFAULT_DROP_RATIO,
 ) -> list:
     """Compare this run's per-collector counts against rolling baselines.
 
     Returns a list of anomaly dicts (sorted worst-first) with keys:
-        collector, baseline, count, kind ("silent" | "drop").
+        collector, baseline, count, kind ("silent" | "drop"), and — for the
+        "silent" kind — streak (consecutive zero-runs including this one).
+
+    A collector is flagged "silent" only once it has returned 0 for
+    ``min_silent_streak`` consecutive runs (so transient single-run dips never
+    alert), and then again every ``min_silent_streak`` runs while it stays down
+    (a daily re-nag, not an hourly one).
 
     Only collectors already present in ``baselines`` are checked — a brand-new
     collector has no history to be judged against yet.
@@ -91,12 +123,18 @@ def detect_anomalies(
             continue  # too sparse / env-gated to judge
         count = int(run_counts.get(collector, 0))
         if count == 0:
-            anomalies.append({
-                "collector": collector,
-                "baseline": base,
-                "count": 0,
-                "kind": "silent",
-            })
+            # Streak including this run = trailing zeros in history so far + 1
+            # (detection runs before this run is folded into the baselines).
+            streak = consecutive_zeros(history) + 1
+            # Fire at the first full-day streak, then once per day thereafter.
+            if streak % min_silent_streak == 0:
+                anomalies.append({
+                    "collector": collector,
+                    "baseline": base,
+                    "count": 0,
+                    "streak": streak,
+                    "kind": "silent",
+                })
         elif drop_ratio > 0 and count < base * drop_ratio:
             anomalies.append({
                 "collector": collector,
@@ -149,9 +187,10 @@ def format_anomalies(anomalies: list) -> str:
     lines = []
     for a in anomalies:
         if a["kind"] == "silent":
+            streak = a.get("streak", 0)
             lines.append(
-                f"⚠️ {a['collector']}: вернул 0 (обычно ~{a['baseline']:.0f}) — "
-                f"вероятно, источник сломан"
+                f"⚠️ {a['collector']}: молчит {streak} запусков подряд "
+                f"(≈{streak}ч, обычно ~{a['baseline']:.0f}) — источник, похоже, мёртв"
             )
         else:
             lines.append(
@@ -166,17 +205,23 @@ def evaluate(
     run_counts: dict,
     *,
     min_baseline: int = DEFAULT_MIN_BASELINE,
+    min_silent_streak: int = DEFAULT_MIN_SILENT_STREAK,
     drop_ratio: float = DEFAULT_DROP_RATIO,
 ) -> tuple:
     """One-call helper: load -> detect -> persist updated baselines.
 
     Returns ``(anomalies, updated_baselines)``. Detection runs against the
     *previous* baselines (before this run is folded in), so a real failure is
-    judged against history, not against itself.
+    judged against history, not against itself — and the silent-streak count
+    sees the trailing zeros that led up to this run.
     """
     baselines = load_baselines(path)
     anomalies = detect_anomalies(
-        baselines, run_counts, min_baseline=min_baseline, drop_ratio=drop_ratio
+        baselines,
+        run_counts,
+        min_baseline=min_baseline,
+        min_silent_streak=min_silent_streak,
+        drop_ratio=drop_ratio,
     )
     updated = update_baselines(baselines, run_counts)
     save_baselines(path, updated)

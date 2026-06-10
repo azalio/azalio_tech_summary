@@ -84,11 +84,18 @@ cross-language) still goes through E5 exactly as before. Tunable/disable via
 - **Source-health** (`health.py`): **automatic, no action needed.** Tracks a
   rolling per-collector item count in
   `$REMOTE_DIR/workspace/memory/source_health.json` and posts a Telegram notice
-  (default chat, title `SOURCE HEALTH`) when a collector returns 0 where it
-  normally yields items — i.e. a silently dead/blocked feed. Warmup: needs
-  ~`HISTORY_WINDOW=24` runs of history and `min_baseline=3` before it will fire,
-  so expect no alerts for ~the first day (and never for env-gated/sparse
-  collectors). Runs only on real runs, not `--dry-run`.
+  (default chat, title `SOURCE HEALTH`) when a collector goes silent — i.e. a
+  dead/blocked feed. Crucially it does **not** alert on the first zero: a feed
+  must return 0 for `min_silent_streak=24` **consecutive** runs (~a full day at
+  hourly cron) before it fires, so transient single-hour RSS/arXiv hiccups that
+  self-heal are ignored (these used to spam an alert every hour). Once tripped it
+  re-nags once per day (every 24 further zeros), not hourly, and goes quiet once
+  the healthy history fully rolls out of the window. Baseline is the median of a
+  collector's **non-zero** runs (so a long outage doesn't decay it to 0 and mask
+  the failure). Warmup: needs `min_baseline=3` of healthy history before any
+  source is eligible (and never fires for env-gated/sparse collectors).
+  `HISTORY_WINDOW=48` (2 days, so a 1-day zero-streak doesn't erase the
+  pre-failure baseline). Runs only on real runs, not `--dry-run`.
 - **Eval harness** (`eval_digest.py`): **optional diagnostic**, run by hand when
   you suspect the applied-vs-fundamental AI/ML filter is misbehaving. Reads
   `digest_runs.jsonl` and reports ArXiv/HF paper keep-rate, no-news rate, item
