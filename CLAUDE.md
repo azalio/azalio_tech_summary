@@ -95,7 +95,16 @@ cross-language) still goes through E5 exactly as before. Tunable/disable via
   the failure). Warmup: needs `min_baseline=3` of healthy history before any
   source is eligible (and never fires for env-gated/sparse collectors).
   `HISTORY_WINDOW=48` (2 days, so a 1-day zero-streak doesn't erase the
-  pre-failure baseline). Runs only on real runs, not `--dry-run`.
+  pre-failure baseline). **Intermittent-by-design sources are exempt**
+  (`intermittent_zero_frac=0.2`): if zero-runs already make up ≥20% of a
+  collector's *healthy* history, long zero-runs are normal for it and never
+  alert. This is what stops `ARXIV ASTROPHYSICS` (a single `rss/astro-ph` feed
+  capped at a few items/run) from false-alerting — arXiv announces one batch a
+  day, the collector consumes it within hours, then correctly yields 0 (feed is
+  healthy, every entry already in `sent_posts`) until tomorrow's batch, easily
+  24h+ over nights/weekends. The tradeoff: a real death of such a niche source is
+  suppressed too — acceptable vs. daily false alerts. Runs only on real runs,
+  not `--dry-run`.
 - **Eval harness** (`eval_digest.py`): **optional diagnostic**, run by hand when
   you suspect the applied-vs-fundamental AI/ML filter is misbehaving. Reads
   `digest_runs.jsonl` and reports ArXiv/HF paper keep-rate, no-news rate, item

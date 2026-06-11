@@ -42,6 +42,20 @@ DEFAULT_MIN_BASELINE = 3
 # than every single hour.
 DEFAULT_MIN_SILENT_STREAK = 24
 
+# A collector whose *healthy* history already contains at least this fraction of
+# zero-output runs is treated as intermittent-by-design, not broken, and is
+# exempt from the silent-failure alert. Some sources are bursty: a single
+# once-daily arXiv batch feed (e.g. ARXIV ASTROPHYSICS = one rss/astro-ph feed
+# capped at a few items/run) is fully consumed within hours of the daily mailing,
+# then correctly yields 0 for the rest of the day — the feed is healthy, every
+# entry is just already-seen — until tomorrow's batch, easily 24h+ of zeros over
+# nights and weekends. A steady hourly feed (HN, Reddit, news RSS) is non-zero
+# every run when alive, so a genuine death still trips the alert. Self-tuning: no
+# per-source label list to maintain. Trade-off: a real death of an intermittent
+# source is suppressed too (acceptable — these are niche garnish sources, and the
+# cost of daily false alerts is alert fatigue that masks real ones).
+DEFAULT_INTERMITTENT_ZERO_FRAC = 0.2
+
 # Optional secondary alert: a steep drop (not to zero) versus baseline. Off by
 # default — zero-output is the high-precision signal; partial drops are noisy.
 DEFAULT_DROP_RATIO = 0.0
@@ -94,12 +108,28 @@ def consecutive_zeros(history: list) -> int:
     return n
 
 
+def is_intermittent(history: list, trailing_zeros: int, frac: float) -> bool:
+    """True if zero-output is a normal feature of this source, not a failure.
+
+    Looks only at the *healthy* history before the current zero-streak (so an
+    in-progress outage doesn't make a steady feed look intermittent) and asks
+    whether zeros already made up at least ``frac`` of it. A once-daily batch
+    feed flatlines at 0 for much of every day by design; a steady hourly feed
+    does not. See ``DEFAULT_INTERMITTENT_ZERO_FRAC``.
+    """
+    healthy = history[: len(history) - trailing_zeros]
+    if not healthy:
+        return False
+    return healthy.count(0) / len(healthy) >= frac
+
+
 def detect_anomalies(
     baselines: dict,
     run_counts: dict,
     *,
     min_baseline: int = DEFAULT_MIN_BASELINE,
     min_silent_streak: int = DEFAULT_MIN_SILENT_STREAK,
+    intermittent_zero_frac: float = DEFAULT_INTERMITTENT_ZERO_FRAC,
     drop_ratio: float = DEFAULT_DROP_RATIO,
 ) -> list:
     """Compare this run's per-collector counts against rolling baselines.
@@ -111,7 +141,9 @@ def detect_anomalies(
     A collector is flagged "silent" only once it has returned 0 for
     ``min_silent_streak`` consecutive runs (so transient single-run dips never
     alert), and then again every ``min_silent_streak`` runs while it stays down
-    (a daily re-nag, not an hourly one).
+    (a daily re-nag, not an hourly one). Sources whose healthy history is already
+    rich in zero-runs are intermittent-by-design (bursty batch feeds) and are
+    exempt — see :func:`is_intermittent`.
 
     Only collectors already present in ``baselines`` are checked — a brand-new
     collector has no history to be judged against yet.
@@ -125,7 +157,10 @@ def detect_anomalies(
         if count == 0:
             # Streak including this run = trailing zeros in history so far + 1
             # (detection runs before this run is folded into the baselines).
-            streak = consecutive_zeros(history) + 1
+            trailing = consecutive_zeros(history)
+            streak = trailing + 1
+            if is_intermittent(history, trailing, intermittent_zero_frac):
+                continue  # bursty by nature; long zero-runs are normal for it
             # Fire at the first full-day streak, then once per day thereafter.
             if streak % min_silent_streak == 0:
                 anomalies.append({
@@ -206,6 +241,7 @@ def evaluate(
     *,
     min_baseline: int = DEFAULT_MIN_BASELINE,
     min_silent_streak: int = DEFAULT_MIN_SILENT_STREAK,
+    intermittent_zero_frac: float = DEFAULT_INTERMITTENT_ZERO_FRAC,
     drop_ratio: float = DEFAULT_DROP_RATIO,
 ) -> tuple:
     """One-call helper: load -> detect -> persist updated baselines.
@@ -221,6 +257,7 @@ def evaluate(
         run_counts,
         min_baseline=min_baseline,
         min_silent_streak=min_silent_streak,
+        intermittent_zero_frac=intermittent_zero_frac,
         drop_ratio=drop_ratio,
     )
     updated = update_baselines(baselines, run_counts)

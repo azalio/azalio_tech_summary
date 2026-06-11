@@ -57,6 +57,33 @@ def test_silent_failure_renags_daily_not_hourly():
     assert fires == {24, 48}
 
 
+def test_intermittent_source_not_flagged_even_after_full_day():
+    # A bursty once-daily batch feed (e.g. ARXIV ASTROPHYSICS): its *healthy*
+    # history is already full of zero-runs (consumed each morning, silent the
+    # rest of the day), so a 24-run zero streak is normal, not a death.
+    healthy = [8, 8, 8, 0, 0, 0, 0, 8, 8, 8, 0, 0, 0, 0]  # ~40% zeros
+    baselines = {"ARXIV ASTROPHYSICS": healthy + [0] * 23}
+    assert health.detect_anomalies(baselines, {"ARXIV ASTROPHYSICS": 0}) == []
+
+
+def test_steady_feed_death_still_flagged_despite_intermittent_check():
+    # Control: a steady hourly feed (no zeros while healthy) that dies for a day
+    # must still alert — the intermittent exemption must not swallow it.
+    baselines = {"HackerNews": [20] * 24 + [0] * 23}
+    anomalies = health.detect_anomalies(baselines, {"HackerNews": 0})
+    assert len(anomalies) == 1 and anomalies[0]["streak"] == 24
+
+
+def test_is_intermittent_ignores_current_outage():
+    # The current zero-streak must not, by itself, make a steady feed look
+    # intermittent: only the pre-streak (healthy) part is measured.
+    history = [20] * 10 + [0] * 30  # 30 trailing zeros are the outage, not normal
+    assert not health.is_intermittent(history, trailing_zeros=30, frac=0.2)
+    # But a feed that was already zero-heavy before the streak is intermittent.
+    history = [8, 0, 0, 8, 0, 0] + [0] * 10
+    assert health.is_intermittent(history, trailing_zeros=10, frac=0.2)
+
+
 def test_silent_streak_threshold_configurable():
     # min_silent_streak=1 restores fire-on-first-zero (used by callers/tests).
     baselines = {"INFRA / DEVOPS / SRE": [10, 12, 11, 9]}
