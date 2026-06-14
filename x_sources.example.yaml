@@ -10,7 +10,7 @@
 #
 # Fields per source:
 #   id        unique stable id (used in dedup/state; don't reuse)
-#   kind      x_user | x_list | rss | bluesky
+#   kind      x_user | x_list | rss | bluesky | x_home
 #   handle    X handle (no @) for x_user
 #   list_id   X numeric list id for x_list
 #   url       feed URL for kind: rss
@@ -68,3 +68,11 @@ sources:
   #   kind: bluesky
   #   bluesky: someone.bsky.social
   #   priority: 5
+  #
+  # Your whole X "Following" timeline = all your subscriptions, no per-handle
+  # listing. Needs self-hosted RSSHub (X_RSSHUB_URL) reading via your auth_token.
+  # Mixed authors (each tweet credited to its real author); cap keeps noise down:
+  # - id: my_following
+  #   kind: x_home
+  #   priority: 8
+  #   max_items: 12

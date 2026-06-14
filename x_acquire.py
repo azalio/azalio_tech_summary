@@ -406,6 +406,26 @@ def _author_label(source):
     return source.id
 
 
+_X_HANDLE_RE = re.compile(r"^https?://x\.com/([A-Za-z0-9_]{1,15})/status/", re.IGNORECASE)
+
+
+def _handle_from_x_url(url):
+    """Extract ``@handle`` from a canonical x.com status URL. Used for mixed-author
+    feeds (the home timeline) where every tweet has a different author. Returns ''
+    for ``/i/status`` or non-X URLs."""
+    m = _X_HANDLE_RE.match(url or "")
+    if m and m.group(1).lower() not in ("i", "status", "statuses"):
+        return "@" + m.group(1)
+    return ""
+
+
+def _entry_author(e):
+    """Best-effort ``@handle`` from a feed entry's author field (fallback for the
+    home timeline when the link didn't yield one)."""
+    m = re.search(r"@([A-Za-z0-9_]{1,15})", str(e.get("author") or ""))
+    return "@" + m.group(1) if m else ""
+
+
 def entries_to_items(entries, source, provider, since_dt):
     """Map feedparser entries to normalized items, dropping out-of-window ones.
 
@@ -413,8 +433,12 @@ def entries_to_items(entries, source, provider, since_dt):
     host (nitter.net/…); rewrite it to the canonical x.com status URL so the
     digest links readers to X (not a flaky mirror) and the same tweet dedupes
     across instances. RSS mirror links (blogs, Bluesky web URLs) are left as-is.
+
+    The ``x_home`` (Following timeline) source mixes many authors, so the author
+    is derived per tweet from the canonical URL/entry rather than the source label.
     """
-    author = _author_label(source)
+    default_author = _author_label(source)
+    mixed_authors = source.kind == "x_home"
     canonicalize = provider in ("nitter", "rsshub")
     out = []
     for e in entries:
@@ -429,6 +453,9 @@ def entries_to_items(entries, source, provider, since_dt):
         text = summary if len(summary) > len(title) else title
         if not text:
             continue
+        author = default_author
+        if mixed_authors:
+            author = _handle_from_x_url(link) or _entry_author(e) or default_author
         out.append(normalize_item(
             url=link, author=author, text=text, title=title,
             source=source.id, provider=provider,
@@ -561,9 +588,10 @@ class BlueskyProvider:
 
 class RsshubProvider:
     """L1: self-hosted RSSHub with a local TWITTER_AUTH_TOKEN (held on the RSSHub
-    host, never here). Routes ``/twitter/user/:handle`` and ``/twitter/list/:id``.
-    The auth cookie + GraphQL hashes need an occasional refresh on the RSSHub box;
-    watch its release feed."""
+    host, never here). Routes ``/twitter/user/:handle``, ``/twitter/list/:id``, and
+    ``/twitter/home_latest`` (the auth account's *Following* timeline — pulls your
+    subscriptions, x_home). The auth cookie + GraphQL hashes need an occasional
+    refresh on the RSSHub box; watch its release feed."""
 
     name = "rsshub"
 
@@ -573,10 +601,13 @@ class RsshubProvider:
         self.timeout = timeout
 
     def supports(self, source):
-        return bool(self.base) and source.kind in ("x_user", "x_list")
+        return bool(self.base) and source.kind in ("x_user", "x_list", "x_home")
 
     def fetch(self, source, since_dt):
-        if source.kind == "x_list" and source.list_id:
+        if source.kind == "x_home":
+            # The authenticated account's "Following" timeline (your subscriptions).
+            route = "/twitter/home_latest"
+        elif source.kind == "x_list" and source.list_id:
             route = f"/twitter/list/{source.list_id}"
         elif source.handle:
             route = f"/twitter/user/{source.handle}"

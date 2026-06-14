@@ -69,6 +69,22 @@ sources:
 No-YAML fallback for a quick test: `export X_HANDLES=OpenAI,garrytan` (handles
 only, no mirrors → they degrade unless an X-native provider is configured).
 
+**Pull your whole "Following" timeline** (all your X subscriptions, no per-handle
+listing) — `kind: x_home`. Needs self-hosted RSSHub (L1) reading via your
+`auth_token`; it serves the auth account's `/twitter/home_latest`. Each tweet is
+credited to its real author, and `max_items` caps the per-run volume:
+
+```yaml
+  - id: my_following
+    kind: x_home
+    priority: 8
+    max_items: 12
+```
+
+It's broader/noisier than curated handles (includes RTs); the per-source cap,
+dedup, and the digest's LLM editor trim it. For tighter signal, curate an X
+**List** instead and use `kind: x_list` with its `list_id`.
+
 **Find a handle's Bluesky DID** (proves the account is real *and active* — a
 handle can resolve to a parked, empty account):
 

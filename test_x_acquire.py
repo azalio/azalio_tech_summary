@@ -214,6 +214,37 @@ def test_rss_provider_keeps_mirror_url(monkeypatch):
     assert items[0]["url"] == "https://www.science.org/content/article/foo"
 
 
+HOME_SAMPLE = b"""<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0"><channel><title>Twitter following timeline</title>
+<item><title>vLLM speculative decoding speedups</title>
+  <link>https://x.com/vllm_project/status/111</link>
+  <pubDate>Wed, 11 Jun 2025 10:00:00 GMT</pubDate></item>
+<item><title>RT something about k8s</title>
+  <link>https://twitter.com/kelseyhightower/status/222</link>
+  <pubDate>Wed, 11 Jun 2025 11:00:00 GMT</pubDate></item>
+</channel></rss>"""
+
+
+def test_rsshub_home_timeline_per_item_author(monkeypatch):
+    # x_home (Following timeline) mixes authors: each item's author comes from its
+    # own canonical x.com URL, not the source label.
+    monkeypatch.setattr(xa, "_http_get", lambda *a, **k: HOME_SAMPLE)
+    s = Source(id="following", kind="x_home")
+    items = RsshubProvider(base_url="http://localhost:1200").fetch(s, since_dt=None)
+    assert len(items) == 2
+    assert items[0]["author"] == "@vllm_project"
+    assert items[0]["url"] == "https://x.com/vllm_project/status/111"
+    assert items[1]["author"] == "@kelseyhightower"  # twitter.com -> x.com, author parsed
+    assert all(i["provider"] == "rsshub" for i in items)
+
+
+def test_x_home_only_supported_by_rsshub():
+    s = Source(id="following", kind="x_home")
+    assert RsshubProvider(base_url="http://h").supports(s) is True
+    assert NitterProvider(instances="https://nitter.net").supports(s) is False
+    assert RssProvider().supports(s) is False
+
+
 def test_rss_provider_since_filter(monkeypatch):
     monkeypatch.setattr(xa, "_http_get", lambda *a, **k: RSS_SAMPLE)
     s = Source(id="s", kind="rss", url="https://feed")
