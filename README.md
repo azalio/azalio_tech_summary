@@ -19,6 +19,7 @@ Output goes to ~30 buckets per day, ~5-15 bullets per digest after dedup.
 
 - **Reddit** — ~30 tech subreddits via Reddit API (programming, kubernetes, MachineLearning, ClaudeAI, ...).
 - **Telegram channels** — last 10 text posts per channel via Telethon/MTProto (optional, channel list in `TELEGRAM_CHANNELS`).
+- **X / Twitter** — free/low-cost acquisition cascade, no paid X API (optional, handles in `x_sources.yaml`): RSS/blog mirrors → Bluesky public API → self-hosted RSSHub → Nitter → twscrape → browser → email, first-success per source with circuit breakers. See [docs/x_acquisition.md](docs/x_acquisition.md).
 - **HackerNews** — front page via Algolia.
 - **Tech press (RSS)** — TechCrunch, Ars Technica, The Verge, Wired, MIT Tech Review, IEEE Spectrum, The Register.
 - **AI research** — HuggingFace Daily Papers (upvotes ≥ 100), ArXiv RSS (cs.AI, cs.LG, cs.CL).

@@ -45,6 +45,7 @@ class Collectors:
         self.market_news_json = os.path.join(workspace, "memory/market_news_raw.json")
         self.ru_news_json = os.path.join(workspace, "memory/ru_news_latest.json")
         self.telegram_raw_json = os.path.join(workspace, "memory/telegram_raw.json")
+        self.x_raw_json = os.path.join(workspace, "memory/x_raw.json")
 
         # Paths to fetcher sub-scripts. Reddit + Telegram digests ship with
         # this repo; the others are optional external scripts (collector
@@ -56,6 +57,9 @@ class Collectors:
         self.telegram_script = os.environ.get(
             "TELEGRAM_DIGEST_SCRIPT",
             os.path.join(repo_dir, "standalone_telegram_digest.py"),
+        )
+        self.x_script = os.environ.get(
+            "X_DIGEST_SCRIPT", os.path.join(repo_dir, "standalone_x_digest.py")
         )
         self.ru_news_script = os.environ.get("RU_NEWS_SCRIPT", "")
         self.market_news_script = os.environ.get("MARKET_NEWS_SCRIPT", "")
@@ -416,6 +420,74 @@ class Collectors:
                 "Telegram", f"@{channel}", title, url,
                 line=f"[@{channel}] {title} - Link: {url}",
                 engagement=float(p.get("views") or 0) or None, freshness=0.8,
+            )
+            count += 1
+        return content if count > 0 else ""
+
+    def _x_enabled(self):
+        """True if any X source is configured (sources file or X_HANDLES env).
+
+        Mirrors x_acquire.load_sources resolution without importing it, so an
+        unconfigured deployment skips the subprocess entirely (no health noise,
+        no wasted run) — same gating pattern as the Telegram collector."""
+        if os.environ.get("X_HANDLES", "").strip():
+            return True
+        env_sources = os.environ.get("X_SOURCES", "")
+        if env_sources and os.path.exists(env_sources):
+            return True
+        default = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "x_sources.yaml")
+        return os.path.exists(default)
+
+    def collect_x(self):
+        """X/Twitter via the free/low-cost acquisition cascade (standalone_x_digest.py).
+
+        The cascade reads each source through the first working provider —
+        RSS/blog mirrors, Bluesky public API, self-hosted RSSHub, Nitter, … (see
+        docs/x_acquisition.md). The subprocess writes x_raw.json; we apply the
+        digest's own URL + semantic dedup here, exactly like the Telegram/Reddit
+        collectors. Silently disabled when no X sources are configured, and any
+        fetcher failure degrades to an empty section instead of breaking the run.
+        """
+        if not self._x_enabled():
+            return ""
+        print("Fetching X/Twitter (cascade)...")
+        try:
+            subprocess.run([self.python_bin, self.x_script], check=True, timeout=600)
+        except Exception as e:
+            # Don't read x_raw.json on failure — the script truncates it up front,
+            # so stale data can't leak, and a partial file is best skipped.
+            print(f"  X fetcher error: {e}")
+            return ""
+        data = self._read_and_clear(self.x_raw_json)
+        if not data:
+            return ""
+
+        content = "X / TWITTER:\n"
+        count = 0
+        for p in data:
+            url = p.get("url") or ""
+            # Items with no canonical URL (e.g. email notifications) can't be
+            # URL-deduped; skip them rather than risk re-posting every hour.
+            if not url or self._is_seen(url):
+                continue
+            author = p.get("author") or "?"
+            source = f"X:{author}"
+            self._mark_seen(url, source)
+            text = (p.get("text") or "").strip()
+            title = ((p.get("title") or text or "").strip())[:200] or "(no title)"
+            if self._is_semantic_dup(title, source, url, text[:300]):
+                continue
+            provider = p.get("provider") or "?"
+            content += f"\n[X {author}] {title} (via {provider})\n"
+            content += f"Link: {url}\n"
+            if text and text != title:
+                content += f"Context: {text[:400]}\n"
+            eng = p.get("engagement")
+            self._add_candidate(
+                "X", author, title, url,
+                line=f"[X {author}] {title} - Link: {url}",
+                engagement=float(eng) if eng else None, freshness=0.8,
             )
             count += 1
         return content if count > 0 else ""

@@ -323,6 +323,8 @@ def main():
     if reddit: all_intelligence_data += "\n" + reddit
     telegram = collectors.collect_telegram()
     if telegram: all_intelligence_data += "\n" + telegram
+    x_news = collectors.collect_x()
+    if x_news: all_intelligence_data += "\n" + x_news
     market = collectors.collect_market_news()
     if market: all_intelligence_data += "\n" + market
     ru_news = collectors.collect_ru_news()

@@ -40,3 +40,6 @@ backups/
 
 # Per-host deploy config (loaded by Makefile)
 .env.deploy
+
+# X acquisition: the real sources list is local (the .example is committed)
+x_sources.yaml

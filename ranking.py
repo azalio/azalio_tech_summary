@@ -62,6 +62,9 @@ SOURCE_WEIGHTS = {
     "ARXIV AI/ML PAPERS": 0.9,
     "ARXIV ASTROPHYSICS": 0.8,
     "Telegram": 1.0,
+    # X/Twitter via the free acquisition cascade. Curated handles, but an
+    # announce layer with PR noise — medium trust, like Telegram.
+    "X": 1.0,
     # Lower-trust / noisier streams
     "GOOGLE NEWS": 0.8,
     "CHINA NEWS": 0.8,
@@ -87,6 +90,10 @@ ENGAGEMENT_SCALES = {
     "HFPapers": 400.0,
     "GitHubTrending": 1500.0,
     "Telegram": 30000.0,
+    # X likes+reposts: tracked handles routinely reach a few thousand, headline
+    # posts 10k+. Only providers that expose counts (Bluesky, twscrape) populate
+    # this; RSS/RSSHub/Nitter items have no engagement and rank on freshness/RRF.
+    "X": 5000.0,
 }
 DEFAULT_ENGAGEMENT_SCALE = 500.0
 

@@ -115,6 +115,39 @@ cross-language) still goes through E5 exactly as before. Tunable/disable via
   ```
   Pure parsing (no E5/network) — also runnable locally on a copied JSONL.
 
+## X / Twitter acquisition cascade (`x_acquire.py`)
+
+Reads X sources **without the paid X API** via a fault-tolerant cascade — see
+`docs/x_acquisition.md` for the full guide. Key facts for ops:
+
+- **Config-gated & degrades, never crashes.** `collect_x()` runs only if an X
+  source is configured (`x_sources.yaml`, `X_SOURCES`, or `X_HANDLES`); otherwise
+  it's a silent no-op (like the Telegram collector). The fetcher is a subprocess
+  (`standalone_x_digest.py`) writing `workspace/memory/x_raw.json`; `collect_x`
+  then applies the digest's own URL + semantic dedup. A fetcher failure → empty X
+  section, not a broken run. Health treats X like Telegram (gated + intermittent),
+  so it won't false-alert.
+- **Cascade, first-success per source:** `rss` mirrors → `bluesky` (AT-proto
+  public API, no auth) → `rsshub` (self-hosted, token on the RSSHub host) →
+  `nitter` → `twscrape`/`browser`/`email` (opt-in, untested in CI, fail closed).
+  The durable strategy is to give each handle a non-X identity (RSS/Bluesky) in
+  `x_sources.yaml`; X-native scraping is the fallback. Order via
+  `X_PROVIDER_ORDER`.
+- **Secrets** (IMAP password, RSSHub access key, auth tokens) live only in
+  `.env`; `redact()` scrubs them from logs and stored errors. The real
+  `x_sources.yaml` is gitignored (only `.example` is tracked). The
+  `TWITTER_AUTH_TOKEN` for RSSHub lives on the **RSSHub host**, never this repo.
+- **Circuit breaker** in `x_state.db` (`provider_state`): 3 consecutive failures
+  for a (provider, source) pair → exponential cooldown (30m→6h); one success
+  clears it. `seen_items`/`fetch_runs` round out the state.
+- **Diagnostics:** `./standalone_x_digest.py --check` (sources, enabled
+  providers, mirror/RSSHub/Nitter reachability, SQLite, schema). Pure unit tests
+  in `test_x_acquire.py` run anywhere (no network/E5): `python -m pytest
+  test_x_acquire.py -q`.
+- A Bluesky handle resolving ≠ active account (e.g. `anthropic.com` is parked /
+  empty) — verify with `getAuthorFeed` before mapping. Empty-but-reachable
+  provider → cascade falls through to the next layer (not an error).
+
 ## LLM CLI & VPN (important)
 
 `core.ask_llm` tries **codex** first, then **gemini** (subprocess, inherits env).

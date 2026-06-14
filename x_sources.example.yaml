@@ -1,0 +1,70 @@
+# X / Twitter sources for the free acquisition cascade (standalone_x_digest.py).
+#
+# Copy to x_sources.yaml (gitignored) and edit. Add sources HERE, never in code.
+# The fetcher reads each source through the first provider that yields items:
+#   rss (mirrors) → bluesky → rsshub → nitter → twscrape → browser → email
+# So the durable, free strategy is: give every X handle a non-X identity
+# (official RSS, GitHub releases, YouTube, Substack, Mastodon, and especially a
+# Bluesky handle). X-native scraping (rsshub/nitter/twscrape/browser) is the
+# fallback, enabled via .env — see docs/x_acquisition.md.
+#
+# Fields per source:
+#   id        unique stable id (used in dedup/state; don't reuse)
+#   kind      x_user | x_list | rss | bluesky
+#   handle    X handle (no @) for x_user
+#   list_id   X numeric list id for x_list
+#   url       feed URL for kind: rss
+#   priority  higher = fetched first (and ranked sooner in the digest)
+#   bluesky   explicit Bluesky handle or DID — x→bsky is NOT 1:1, state it
+#   bluesky_list  at:// list URI for a Bluesky list feed
+#   mirrors   list of {kind, url} feeds tried before any X path
+#   max_items per-source cap (0 = pipeline default)
+
+sources:
+  # Anthropic is effectively X-only here: it has no public RSS feed and its
+  # Bluesky handle (anthropic.com) is a parked, empty account. So this source
+  # DEGRADES (yields nothing) until you enable an X-native provider — self-hosted
+  # RSSHub (X_RSSHUB_URL) or a Nitter instance (X_NITTER_INSTANCES) in .env. It's
+  # here on purpose to show the honest fallback case: no free non-X mirror exists.
+  - id: anthropic_x
+    kind: x_user
+    handle: AnthropicAI
+    priority: 10
+    # bluesky: anthropic.com   # ← parked/empty as of 2026-06; left off deliberately
+
+  # Science magazine's news desk. The science.org news RSS is the authoritative
+  # mirror; Bluesky (science.org) is the backup. X is never touched here.
+  - id: science_news_x
+    kind: x_user
+    handle: NewsfromScience
+    priority: 9
+    bluesky: science.org
+    mirrors:
+      - kind: rss
+        url: https://www.science.org/rss/news_current.xml
+
+  # Garry Tan (YC). No official RSS; cross-posts to Bluesky.
+  - id: garrytan_x
+    kind: x_user
+    handle: garrytan
+    priority: 7
+    bluesky: garrytan.bsky.social
+
+  # --- Templates (uncomment & edit) ------------------------------------------
+  # A pure-RSS source (no X involved) — blogs, GitHub releases, Substack, etc.:
+  # - id: company_blog
+  #   kind: rss
+  #   url: https://example.com/blog/rss.xml
+  #   priority: 8
+  #
+  # An X list (needs self-hosted RSSHub or twscrape configured in .env):
+  # - id: ai_research_list
+  #   kind: x_list
+  #   list_id: "1234567890123456789"
+  #   priority: 6
+  #
+  # A pure Bluesky account:
+  # - id: someone_bsky
+  #   kind: bluesky
+  #   bluesky: someone.bsky.social
+  #   priority: 5
