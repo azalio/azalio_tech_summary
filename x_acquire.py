@@ -407,14 +407,23 @@ def _author_label(source):
 
 
 def entries_to_items(entries, source, provider, since_dt):
-    """Map feedparser entries to normalized items, dropping out-of-window ones."""
+    """Map feedparser entries to normalized items, dropping out-of-window ones.
+
+    For X-native providers (nitter/rsshub) the entry link points at the mirror
+    host (nitter.net/…); rewrite it to the canonical x.com status URL so the
+    digest links readers to X (not a flaky mirror) and the same tweet dedupes
+    across instances. RSS mirror links (blogs, Bluesky web URLs) are left as-is.
+    """
     author = _author_label(source)
+    canonicalize = provider in ("nitter", "rsshub")
     out = []
     for e in entries:
         pub = e.get("published_parsed") or e.get("updated_parsed")
         if _struct_before(pub, since_dt):
             continue
         link = str(e.get("link") or "")
+        if canonicalize and link:
+            link = canonical_url(link)
         title = strip_html(e.get("title") or "")
         summary = strip_html(e.get("summary") or e.get("description") or "")
         text = summary if len(summary) > len(title) else title

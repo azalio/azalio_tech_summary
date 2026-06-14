@@ -194,6 +194,26 @@ def test_rss_provider_parses_and_strips(monkeypatch):
     assert items[0]["id"] == "url:https://x.com/OpenAI/status/123"
 
 
+def test_nitter_canonicalizes_url_to_xcom(monkeypatch):
+    monkeypatch.setattr(xa, "_http_get", lambda *a, **k: RSS_SAMPLE)
+    s = Source(id="s", kind="x_user", handle="OpenAI")
+    items = NitterProvider(instances="https://nitter.net").fetch(s, since_dt=None)
+    # Stored url is rewritten to x.com (not the mirror host) for the digest + dedup.
+    assert items[0]["url"] == "https://x.com/OpenAI/status/123"
+    assert items[0]["provider"] == "nitter"
+
+
+def test_rss_provider_keeps_mirror_url(monkeypatch):
+    # An rss mirror link is NOT a status URL — must be left intact, not x.com-ified.
+    feed = b"""<?xml version="1.0"?><rss version="2.0"><channel><title>t</title>
+<item><title>Blog article title here</title>
+<link>https://www.science.org/content/article/foo</link></item></channel></rss>"""
+    monkeypatch.setattr(xa, "_http_get", lambda *a, **k: feed)
+    s = Source(id="s", kind="rss", url="https://www.science.org/rss")
+    items = RssProvider().fetch(s, since_dt=None)
+    assert items[0]["url"] == "https://www.science.org/content/article/foo"
+
+
 def test_rss_provider_since_filter(monkeypatch):
     monkeypatch.setattr(xa, "_http_get", lambda *a, **k: RSS_SAMPLE)
     s = Source(id="s", kind="rss", url="https://feed")
