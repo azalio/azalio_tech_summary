@@ -159,12 +159,22 @@ def test_parse_sources_fields_and_mirrors():
 
 
 def test_load_sources_env_fallback(monkeypatch, tmp_path):
-    monkeypatch.delenv("X_SOURCES", raising=False)
-    monkeypatch.setenv("X_HANDLES", "OpenAI, @garrytan ,")
-    # Point the default file lookup at an empty dir so only the env fallback hits.
-    monkeypatch.chdir(tmp_path)
+    # Isolate from any real x_sources.yaml sitting next to the module (the file
+    # legitimately wins over X_HANDLES, so the env fallback must be tested with
+    # the default-file lookup pointed at a nonexistent path).
+    monkeypatch.setattr(xa, "_default_sources_path",
+                        lambda: str(tmp_path / "absent.yaml"))
     srcs = load_sources(env={"X_HANDLES": "OpenAI, @garrytan ,"})
     assert {s.handle for s in srcs} == {"OpenAI", "garrytan"}
+    assert all(s.kind == "x_user" for s in srcs)
+
+
+def test_load_sources_file_wins_over_env_handles(tmp_path):
+    # Precedence: an explicit sources file overrides the X_HANDLES fallback.
+    f = tmp_path / "s.yaml"
+    f.write_text("sources:\n  - id: a\n    kind: x_user\n    handle: FromFile\n")
+    srcs = load_sources(path=str(f), env={"X_HANDLES": "OpenAI"})
+    assert [s.handle for s in srcs] == ["FromFile"]
     assert all(s.kind == "x_user" for s in srcs)
 
 

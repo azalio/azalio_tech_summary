@@ -313,8 +313,7 @@ def load_sources(path=None, env=None):
         candidates.append(path)
     if env.get("X_SOURCES"):
         candidates.append(env["X_SOURCES"])
-    candidates.append(os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                   "x_sources.yaml"))
+    candidates.append(_default_sources_path())
     for cand in candidates:
         if cand and os.path.exists(cand):
             data = _load_config_file(cand)
@@ -325,6 +324,13 @@ def load_sources(path=None, env=None):
                if h.strip()]
     return [Source(id=f"x_{h.lower()}", kind="x_user", handle=h, priority=5)
             for h in handles]
+
+
+def _default_sources_path():
+    """Default sources file: ``x_sources.yaml`` next to this module. Indirected
+    through a function so it can be overridden (and tests can isolate from a real
+    file sitting in the repo)."""
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "x_sources.yaml")
 
 
 def _load_config_file(path):
