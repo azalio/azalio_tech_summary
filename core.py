@@ -6,6 +6,18 @@ import re
 import shutil
 import tempfile
 
+# Per-CLI wall-clock budget for an LLM call. Pinned-model Gemini answers a 28KB
+# digest prompt in ~37s and Codex fails fast on quota (~10s), so 240s is pure
+# safety margin against a transient slow run. Override via LLM_TIMEOUT.
+try:
+    LLM_TIMEOUT = int(os.environ.get("LLM_TIMEOUT", "240"))
+except ValueError:
+    LLM_TIMEOUT = 240
+
+# Model to pin Gemini to (skips gemini-cli's slow model-router). Override via
+# GEMINI_MODEL if the CLI's model id changes; set empty to let the router pick.
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3-flash-preview")
+
 class VibeCore:
     def __init__(self):
         self.tg_token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
@@ -239,8 +251,11 @@ class VibeCore:
         env["PATH"] = ":".join(extra_paths + [env.get("PATH", "")])
 
         # Each entry: (name, path hints, runner). Runner returns clean text or None.
-        # Prefer Codex: on the production host Gemini often hangs until timeout,
-        # while Codex has a cron-safe final-output path through `-o`.
+        # Prefer Codex for quality; on quota exhaustion / failure it returns None
+        # in ~10s (immediate rc=1) and we fall through to Gemini. Gemini used to
+        # blow the timeout because gemini-cli's model-router retries on every
+        # call (~182s on a 28KB prompt); _run_gemini now pins a model to skip the
+        # router (~37s), so the fallback is reliable.
         candidates = [
             ("codex", [os.environ.get("CODEX_BIN", ""), "codex"], self._run_codex),
             ("gemini", [os.environ.get("GEMINI_BIN", ""), "gemini"], self._run_gemini),
@@ -259,7 +274,7 @@ class VibeCore:
                 tried.add(resolved)
                 print(f"Trying {name} ({resolved})...")
                 try:
-                    out = runner(resolved, prompt, env, timeout=180)
+                    out = runner(resolved, prompt, env, timeout=LLM_TIMEOUT)
                 except Exception as e:
                     print(f"{name} failed: {e}")
                     continue
@@ -291,8 +306,13 @@ class VibeCore:
         return process.returncode, out, err
 
     def _run_gemini(self, resolved, prompt, env, timeout):
+        # Pin the model to bypass gemini-cli's model-router: its
+        # NumericalClassifierStrategy retries on every call ("Retry attempts
+        # exhausted"), pushing a 28KB digest prompt to ~182s (over the old 180s
+        # timeout → killed). Pinned, the same prompt returns in ~37s.
+        argv = [resolved, "-m", GEMINI_MODEL] if GEMINI_MODEL else [resolved]
         rc, out, err = self._run_subprocess(
-            [resolved], prompt, env, timeout, stdout=subprocess.PIPE,
+            argv, prompt, env, timeout, stdout=subprocess.PIPE,
         )
         if rc == 0 and out and out.strip():
             return out.strip()

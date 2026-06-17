@@ -970,3 +970,56 @@ class TestLexicalPreDedup:
         cluster = d._clusters[0]
         assert cluster["count"] == 2
         d.close()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 6. ask_llm Gemini model-pinning (core.VibeCore)
+# ═══════════════════════════════════════════════════════════════════════════
+
+import core as core_mod
+
+
+class TestGeminiModelPinning:
+    """Gemini-cli's model-router (NumericalClassifierStrategy) retries on every
+    call, pushing a 28KB digest prompt to ~182s — over the old 180s timeout, so
+    the codex→gemini fallback was getting killed 2s short and the digest never
+    posted. Pinning the model with `-m` skips the router (~37s)."""
+
+    def test_run_gemini_pins_model_and_forwards_timeout(self):
+        c = _bare_core()
+        captured = {}
+
+        def fake_subprocess(argv, prompt, env, timeout, stdout):
+            captured["argv"] = argv
+            captured["timeout"] = timeout
+            return 0, '{"response": "ok"}', ""
+
+        c._run_subprocess = fake_subprocess
+        out = c._run_gemini("/usr/bin/gemini", "prompt", {}, timeout=240)
+
+        assert out == '{"response": "ok"}'
+        assert captured["argv"][0] == "/usr/bin/gemini"
+        assert "-m" in captured["argv"], "must pin a model to skip the router"
+        i = captured["argv"].index("-m")
+        assert captured["argv"][i + 1] == core_mod.GEMINI_MODEL
+        assert captured["timeout"] == 240
+
+    def test_run_gemini_no_pin_when_model_empty(self, monkeypatch):
+        """Empty GEMINI_MODEL is the documented escape hatch — fall back to the
+        router (bare argv) rather than passing `-m ''`."""
+        monkeypatch.setattr(core_mod, "GEMINI_MODEL", "")
+        c = _bare_core()
+        captured = {}
+
+        def fake_subprocess(argv, prompt, env, timeout, stdout):
+            captured["argv"] = argv
+            return 0, "out", ""
+
+        c._run_subprocess = fake_subprocess
+        c._run_gemini("/usr/bin/gemini", "prompt", {}, timeout=240)
+        assert captured["argv"] == ["/usr/bin/gemini"]
+
+    def test_llm_timeout_exceeds_unpinned_worst_case(self):
+        """The budget must clear the ~182s an unpinned gemini run can take, so a
+        transient router stall doesn't reintroduce the clipped-at-180s failure."""
+        assert core_mod.LLM_TIMEOUT >= 200
