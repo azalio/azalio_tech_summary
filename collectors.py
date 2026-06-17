@@ -119,6 +119,42 @@ class Collectors:
         query = urlencode(sorted(filtered.items()), doseq=True) if filtered else ""
         return urlunparse(("https", netloc, path, "", query, ""))
 
+    @staticmethod
+    def _is_recent(iso_ts, days):
+        """True if an ISO-8601 timestamp is within `days` of now (UTC).
+
+        Tolerates a trailing ``Z`` and naive timestamps. Missing or unparseable
+        values return False (the item is treated as not-recent and skipped)."""
+        if not iso_ts:
+            return False
+        try:
+            ts = datetime.fromisoformat(str(iso_ts).replace("Z", "+00:00"))
+        except ValueError:
+            return False
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        return ts >= datetime.now(timezone.utc) - timedelta(days=days)
+
+    @staticmethod
+    def _flatten_richtext(node):
+        """Flatten a TipTap/ProseMirror rich-text doc (nested
+        ``{type, content, text}`` nodes) into a single plain-text string.
+        Used for Watcha post bodies, which arrive as structured JSON."""
+        out = []
+
+        def walk(n):
+            if isinstance(n, dict):
+                if n.get("type") == "text" and n.get("text"):
+                    out.append(n["text"])
+                for ch in n.get("content") or []:
+                    walk(ch)
+            elif isinstance(n, list):
+                for ch in n:
+                    walk(ch)
+
+        walk(node)
+        return re.sub(r"\s+", " ", " ".join(out)).strip()
+
     def _add_candidate(self, collector, source, title, url, line="",
                        engagement=None, author=None, freshness=0.5, cvss=None):
         """Register a structured candidate for ranking + health tracking.
@@ -698,6 +734,121 @@ class Collectors:
             "LeiPhone": "https://www.leiphone.com/feed/",
         }
         return self._fetch_rss(feeds, "CHINA TECH", max_per_feed=3, max_total=12)
+
+    def collect_watcha(self):
+        """Watcha (观猹 / watcha.cn) — a Chinese "Product Hunt for AI": new
+        AI-product launches + hot community posts. Public JSON API (no auth) at
+        ``/api/v2``; there is no RSS. Surfaces Chinese frontier-AI signal — e.g.
+        domestic LLM releases — often ahead of English-language media. zh titles
+        and bodies pass through verbatim to the LLM editor, which translates them
+        in the digest step (same as collect_china_tech).
+
+        Products are filtered to *recent launches* — the hot list otherwise pins
+        perennial favourites (DeepSeek, Cursor, …) that aren't news. Posts are
+        filtered to the last few days. Each upstream request degrades to an empty
+        section on failure, so a Watcha outage never breaks the run."""
+        print("Fetching Watcha (观猹)...")
+        base = "https://watcha.cn/api/v2"
+        headers = {"User-Agent": "Mozilla/5.0 vibe-intel/1.0"}
+        blocks = []
+
+        # --- New AI products (recent launches, ranked by Watcha's hot score) ---
+        try:
+            resp = requests.get(f"{base}/hot/products", headers=headers, timeout=15)
+            resp.raise_for_status()
+            items = resp.json().get("data", {}).get("items", [])
+        except Exception as e:
+            print(f"  Watcha products error: {e}")
+            items = []
+
+        prod_lines = []
+        count = 0
+        for p in items:
+            if not self._is_recent(p.get("create_at"), days=14):
+                continue
+            slug = (p.get("slug") or "").strip()
+            name = (p.get("name") or "").strip()
+            if not slug or not name:
+                continue
+            url = f"https://watcha.cn/products/{slug}"
+            if self._is_seen(url):
+                continue
+            self._mark_seen(url, "Watcha")
+            slogan = (p.get("slogan") or "").strip()
+            desc = re.sub(r"\s+", " ", p.get("description") or "").strip()[:300]
+            upvotes = (p.get("stats") or {}).get("upvotes") or 0
+            title = f"{name} — {slogan}" if slogan else name
+            if self._is_semantic_dup(title, "Watcha", url, desc):
+                continue
+            ctx = desc or slogan
+            prod_lines.append(
+                f"- {title} ({upvotes} upvotes)"
+                + (f" - {ctx}" if ctx else "")
+                + f" - Link: {url}"
+            )
+            self._add_candidate(
+                "Watcha", "Watcha Products", title, url,
+                line=f"- {title} - Link: {url}",
+                engagement=float(upvotes) if upvotes else None, freshness=0.7,
+            )
+            count += 1
+            if count >= 6:
+                break
+        if prod_lines:
+            blocks.append(
+                "WATCHA NEW AI PRODUCTS (观猹, zh — translate in digest):\n"
+                + "\n".join(prod_lines)
+            )
+
+        # --- Hot community posts (recent) ---
+        try:
+            resp = requests.get(f"{base}/hot/posts", headers=headers, timeout=15)
+            resp.raise_for_status()
+            items = resp.json().get("data", {}).get("items", [])
+        except Exception as e:
+            print(f"  Watcha posts error: {e}")
+            items = []
+
+        post_lines = []
+        count = 0
+        for post in items:
+            if not self._is_recent(post.get("create_at"), days=4):
+                continue
+            pid = post.get("id")
+            title = (post.get("title") or "").strip()
+            if not pid or not title:
+                continue
+            url = f"https://watcha.cn/discuss/{pid}"
+            if self._is_seen(url):
+                continue
+            self._mark_seen(url, "Watcha")
+            body = self._flatten_richtext(post.get("content"))[:300]
+            product = (post.get("product") or {}).get("name", "").strip()
+            upvotes = (post.get("stats") or {}).get("upvotes") or 0
+            dup_key = f"{title} [{product}]" if product else title
+            if self._is_semantic_dup(dup_key, "Watcha", url, body):
+                continue
+            prefix = f"{product}: " if product else ""
+            post_lines.append(
+                f"- {prefix}{title} ({upvotes} upvotes)"
+                + (f" - {body}" if body else "")
+                + f" - Link: {url}"
+            )
+            self._add_candidate(
+                "Watcha", "Watcha Posts", dup_key, url,
+                line=f"- {prefix}{title} - Link: {url}",
+                engagement=float(upvotes) if upvotes else None, freshness=0.85,
+            )
+            count += 1
+            if count >= 8:
+                break
+        if post_lines:
+            blocks.append(
+                "WATCHA HOT POSTS (观猹 社区, zh — translate in digest):\n"
+                + "\n".join(post_lines)
+            )
+
+        return "\n".join(blocks)
 
     def collect_google_news(self):
         """Google News RSS for targeted topics."""

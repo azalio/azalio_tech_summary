@@ -69,6 +69,7 @@ SOURCE_WEIGHTS = {
     "GOOGLE NEWS": 0.8,
     "CHINA NEWS": 0.8,
     "CHINA TECH": 0.8,
+    "Watcha": 0.8,
     "NewsAPI": 0.8,
     "FINNHUB MARKET NEWS": 0.7,
     "MARKET NEWS": 0.7,
@@ -90,6 +91,8 @@ ENGAGEMENT_SCALES = {
     "HFPapers": 400.0,
     "GitHubTrending": 1500.0,
     "Telegram": 30000.0,
+    # Watcha upvotes are small: new products 0-30, hot posts 30-300+ -> scale 150
+    "Watcha": 150.0,
     # X likes+reposts: tracked handles routinely reach a few thousand, headline
     # posts 10k+. Only providers that expose counts (Bluesky, twscrape) populate
     # this; RSS/RSSHub/Nitter items have no engagement and rank on freshness/RRF.

@@ -16,7 +16,7 @@ DEPLOY_FILES := main.py core.py collectors.py dedup.py \
                 standalone_reddit_digest.py standalone_telegram_digest.py \
                 standalone_x_digest.py x_sources.example.yaml \
                 test_dedup.py test_ranking.py test_health.py test_eval_digest.py \
-                test_x_acquire.py \
+                test_x_acquire.py test_collectors.py \
                 requirements.txt
 
 BACKUP_DIR ?= backups

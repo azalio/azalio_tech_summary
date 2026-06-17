@@ -339,6 +339,8 @@ def main():
     if china_news: all_intelligence_data += "\n" + china_news
     china_tech = collectors.collect_china_tech()
     if china_tech: all_intelligence_data += "\n" + china_tech
+    watcha = collectors.collect_watcha()
+    if watcha: all_intelligence_data += "\n" + watcha
     arxiv = collectors.collect_arxiv()
     if arxiv: all_intelligence_data += "\n" + arxiv
     tech = collectors.collect_tech_news()
