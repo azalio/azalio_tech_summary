@@ -735,18 +735,50 @@ class Collectors:
         }
         return self._fetch_rss(feeds, "CHINA TECH", max_per_feed=3, max_total=12)
 
+    # Relevance allowlist for the Watcha "news slice". The raw hot feeds are
+    # mostly consumer/community chatter (games, newcomer intros, marketing,
+    # jokes) that the DevOps/SRE digest editor correctly drops — a 2-day prod
+    # run surfaced 0 Watcha items into a posted digest. We therefore keep only
+    # frontier-AI / dev-tool / release / security signal, matched by keyword
+    # (zh + en), plus the daily "今日观猹" news roundups (Manus/DeepSeek/etc.).
+    # Deliberately broad and admittedly brittle: a precision pre-filter on a
+    # low-signal source, not a classifier. The LLM editor is still the final gate.
+    _WATCHA_ROUNDUP_PREFIX = "今日观猹"
+    _WATCHA_RELEVANT_RE = re.compile(
+        r"模型|大模型|多模态|开源|推理|训练|微调|算力|部署|智能体|网关|框架|"
+        r"发布|上线|内测|公测|融资|估值|"
+        r"注入|越狱|漏洞|安全|"
+        r"GLM|DeepSeek|Qwen|通义|智谱|Kimi|文心|豆包|"
+        r"LLM|GPT|Claude|Gemini|Llama|"
+        r"\bAPI\b|\bagent\b|\bMCP\b|\bRAG\b|\bSDK\b|\bGPU\b|"
+        r"inference|release|launch|open[- ]?source|prompt\s*injection|jailbreak",
+        re.IGNORECASE,
+    )
+
+    def _watcha_is_relevant(self, title, body=""):
+        """True if a Watcha item is dev/frontier-AI news for the SRE reader:
+        a "今日观猹" daily roundup, or any keyword-allowlist hit. Filters out the
+        consumer/community noise that otherwise never survives the editor."""
+        if (title or "").startswith(self._WATCHA_ROUNDUP_PREFIX):
+            return True
+        return bool(self._WATCHA_RELEVANT_RE.search(f"{title or ''} {body or ''}"))
+
     def collect_watcha(self):
         """Watcha (观猹 / watcha.cn) — a Chinese "Product Hunt for AI": new
         AI-product launches + hot community posts. Public JSON API (no auth) at
         ``/api/v2``; there is no RSS. Surfaces Chinese frontier-AI signal — e.g.
-        domestic LLM releases — often ahead of English-language media. zh titles
-        and bodies pass through verbatim to the LLM editor, which translates them
-        in the digest step (same as collect_china_tech).
+        domestic LLM releases, Manus/DeepSeek news — often ahead of
+        English-language media. zh titles/bodies pass through verbatim to the LLM
+        editor, which translates them in the digest step (same as
+        collect_china_tech).
 
-        Products are filtered to *recent launches* — the hot list otherwise pins
-        perennial favourites (DeepSeek, Cursor, …) that aren't news. Posts are
-        filtered to the last few days. Each upstream request degrades to an empty
-        section on failure, so a Watcha outage never breaks the run."""
+        Filtered to a *news slice* (_watcha_is_relevant): the raw hot feeds are
+        mostly consumer/community noise that the editor drops, so only dev-AI /
+        release / security items and "今日观猹" daily roundups are emitted.
+        Products are additionally capped to recent launches (≤14d) — the hot list
+        otherwise pins perennial favourites (DeepSeek, Cursor, …). Each upstream
+        request degrades to an empty section on failure, so a Watcha outage never
+        breaks the run."""
         print("Fetching Watcha (观猹)...")
         base = "https://watcha.cn/api/v2"
         headers = {"User-Agent": "Mozilla/5.0 vibe-intel/1.0"}
@@ -762,6 +794,7 @@ class Collectors:
             items = []
 
         prod_lines = []
+        prod_skipped = 0
         count = 0
         for p in items:
             if not self._is_recent(p.get("create_at"), days=14):
@@ -770,14 +803,19 @@ class Collectors:
             name = (p.get("name") or "").strip()
             if not slug or not name:
                 continue
+            slogan = (p.get("slogan") or "").strip()
+            desc = re.sub(r"\s+", " ", p.get("description") or "").strip()[:300]
+            title = f"{name} — {slogan}" if slogan else name
+            # News-slice filter runs BEFORE seen/dedup so irrelevant items don't
+            # pollute the dedup DB or consume a _mark_seen slot.
+            if not self._watcha_is_relevant(name, f"{slogan} {desc}"):
+                prod_skipped += 1
+                continue
             url = f"https://watcha.cn/products/{slug}"
             if self._is_seen(url):
                 continue
             self._mark_seen(url, "Watcha")
-            slogan = (p.get("slogan") or "").strip()
-            desc = re.sub(r"\s+", " ", p.get("description") or "").strip()[:300]
             upvotes = (p.get("stats") or {}).get("upvotes") or 0
-            title = f"{name} — {slogan}" if slogan else name
             if self._is_semantic_dup(title, "Watcha", url, desc):
                 continue
             ctx = desc or slogan
@@ -810,6 +848,7 @@ class Collectors:
             items = []
 
         post_lines = []
+        post_skipped = 0
         count = 0
         for post in items:
             if not self._is_recent(post.get("create_at"), days=4):
@@ -818,11 +857,15 @@ class Collectors:
             title = (post.get("title") or "").strip()
             if not pid or not title:
                 continue
+            body = self._flatten_richtext(post.get("content"))[:300]
+            # News-slice filter before seen/dedup (see products loop).
+            if not self._watcha_is_relevant(title, body):
+                post_skipped += 1
+                continue
             url = f"https://watcha.cn/discuss/{pid}"
             if self._is_seen(url):
                 continue
             self._mark_seen(url, "Watcha")
-            body = self._flatten_richtext(post.get("content"))[:300]
             product = (post.get("product") or {}).get("name", "").strip()
             upvotes = (post.get("stats") or {}).get("upvotes") or 0
             dup_key = f"{title} [{product}]" if product else title
@@ -848,6 +891,9 @@ class Collectors:
                 + "\n".join(post_lines)
             )
 
+        print(f"  Watcha news-slice: kept {len(prod_lines)} products "
+              f"(filtered {prod_skipped}), {len(post_lines)} posts "
+              f"(filtered {post_skipped})")
         return "\n".join(blocks)
 
     def collect_google_news(self):

@@ -60,3 +60,33 @@ def test_flatten_richtext_collapses_whitespace_and_handles_empty():
     assert Collectors._flatten_richtext({}) == ""
     messy = {"content": [{"text": "  a\n\nb  ", "type": "text"}], "type": "doc"}
     assert Collectors._flatten_richtext(messy) == "a b"
+
+
+# --- _watcha_is_relevant: news-slice filter ---
+# Strings below are verbatim Watcha items seen in production (digest_runs.jsonl):
+# the relevant ones must pass, the consumer/community noise must be dropped.
+# _watcha_is_relevant is an instance method but reads no instance state, so we
+# bind it unbound via the class to avoid running Collectors.__init__ (DB setup).
+def _relevant(title, body=""):
+    return Collectors._watcha_is_relevant(object.__new__(Collectors), title, body)
+
+
+def test_watcha_relevant_keeps_daily_roundup():
+    # "今日观猹丨…" daily news roundups are always kept (Manus/DeepSeek news).
+    assert _relevant("今日观猹丨原始投资者拟 20 亿美元赎回 Manus，DS 识图全量上线") is True
+
+
+def test_watcha_relevant_keeps_dev_and_model_signal():
+    assert _relevant("词元跳动", "兼容多主流协议与智能路由的 AI 原生大模型 API 统一网关工作台") is True
+    assert _relevant("TokenDance 首发上线 GLM-5.2，内测一周后开放") is True
+    assert _relevant("第一次感受到了提示词注入的恐怖") is True  # 注入 = prompt injection
+    assert _relevant("有人用过这家免费模型否？Agnes") is True   # 模型 = model
+
+
+def test_watcha_relevant_drops_consumer_noise():
+    assert _relevant("今天你卖的是什么腿？", "我曾经只想卖一只热乎的腿") is False
+    assert _relevant("动物去哪儿", "基于真实世界的小动物旅行游戏") is False
+    assert _relevant("开箱了观猹的端午大礼包！") is False
+    assert _relevant("新人来报到啦！") is False
+    assert _relevant("日子也是好起来了") is False
+    assert _relevant("冒个泡") is False
