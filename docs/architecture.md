@@ -6,7 +6,8 @@
 collects candidate headlines from RSS feeds, REST APIs, Reddit, Telegram
 channels, Hacker News, Habr, GitHub Trending, HuggingFace Daily Papers, arXiv,
 Claude release notes, NVD/CISA/security feeds, Google News, applied AI/SRE
-engineering feeds, and optional external collector scripts. It removes repeated
+engineering feeds, Watcha, optional X/Twitter acquisition, and optional external
+collector scripts. It removes repeated
 stories with URL and semantic event deduplication, asks an LLM CLI to write a
 compact Russian digest, and posts the result to Telegram. Current-run event
 clusters are also surfaced into the prompt as ranking-only source-burst signals
@@ -23,6 +24,11 @@ In scope:
 
 - Collecting tech, AI/ML, security, science, finance, channel, release-note,
   and global-news items from configured public sources.
+- Pulling X/Twitter-adjacent sources through a free/low-cost cascade
+  (`x_acquire.py`, `standalone_x_digest.py`) that prefers durable mirrors and
+  Bluesky before X-native fallbacks.
+- Reading Watcha AI-product/news slices from public Watcha endpoints while
+  filtering the broader community feed to developer/frontier-AI relevance.
 - Filtering already-seen URLs and semantically duplicated events before the LLM
   prompt is built.
 - Surfacing multi-source event bursts to the LLM prompt as ranking hints while
@@ -85,16 +91,26 @@ SQLite databases, raw collector handoff JSON, and the previous digest text.
 - `collectors.py` owns source integrations. It contains RSS helpers, URL
   normalization, `sent_posts` URL deduplication, optional API-key collectors,
   source-specific formatting for the prompt payload, and handoff points for
-  bundled Reddit/Telegram fetcher subprocesses. Every collector also registers a
-  structured `ranking.Candidate` per emitted item (with source-native engagement
-  where available) and increments per-collector item counts for source-health
-  tracking.
+  bundled Reddit/Telegram/X fetcher subprocesses. Every collector also
+  registers a structured `ranking.Candidate` per emitted item (with
+  source-native engagement where available) and increments per-collector item
+  counts for source-health tracking. The Watcha collector keeps only product,
+  release, security, AI-model, developer-tool, and daily-roundup items before
+  they reach the digest prompt.
 - `ranking.py` fuses the structured candidates into a single diversity-capped
   priority index handed to the editor as a ranking-only hint. It normalizes each
   source's engagement metric (HN points, Reddit score, Habr/HF upvotes, GitHub
-  stars/day, Telegram views, CVSS) onto a common log axis, applies weighted
-  reciprocal-rank fusion across source streams, and enforces hard per-source and
-  per-author caps.
+  stars/day, Telegram views, CVSS, X engagement, Watcha hot score) onto a
+  common log axis, applies weighted reciprocal-rank fusion across source
+  streams, and enforces hard per-source and per-author caps.
+- `x_acquire.py` owns the X/Twitter acquisition cascade and state. It reads
+  configured accounts through mirrors, Bluesky, RSSHub, Nitter, twscrape,
+  browser, or email providers, applies per-provider/source circuit breakers, and
+  emits route-independent normalized items.
+- `standalone_x_digest.py` is the CLI/subprocess boundary for X/Twitter
+  acquisition. In digest mode it writes `workspace/memory/x_raw.json` for
+  `collectors.py` to deduplicate and rank; standalone JSONL mode can maintain
+  its own `x_state.db` seen-item table.
 - `health.py` keeps a rolling per-collector item-count baseline
   (`source_health.json`) and flags silent failures — a collector that returns
   nothing when it normally yields items — so dead/blocked feeds surface instead
@@ -112,11 +128,13 @@ SQLite databases, raw collector handoff JSON, and the previous digest text.
   during the current process, marks already reported clusters, and exposes
   high/medium source-burst summaries through `event_signals()`.
 - `core.py` owns LLM CLI execution and Telegram delivery. It discovers Gemini or
-  Codex from explicit env vars or PATH, deduplicates resolved binaries, runs
-  Codex through `codex exec --skip-git-repo-check -o <tmpfile> -` so cron can
-  capture the final response without entering the TUI, kills timed-out child
-  processes, converts basic Markdown to Telegram HTML, and falls back to plain
-  text if Telegram rejects HTML.
+  Codex from explicit env vars or PATH, deduplicates resolved binaries, pins
+  Gemini to `GEMINI_MODEL` by default so the fallback does not depend on the
+  CLI model router, runs Codex through
+  `codex exec --skip-git-repo-check -o <tmpfile> -` so cron can capture the
+  final response without entering the TUI, kills timed-out child processes,
+  converts basic Markdown to Telegram HTML, and falls back to plain text if
+  Telegram rejects HTML.
 - `standalone_reddit_digest.py` is the bundled Reddit fetcher used by
   `Collectors.collect_reddit`.
 - `standalone_telegram_digest.py` is the optional Telethon collector for
@@ -143,8 +161,11 @@ SQLite databases, raw collector handoff JSON, and the previous digest text.
 3. `Collectors` opens or creates `memory/reddit_sent.db` and removes URL entries
    older than the configured TTL.
 4. Each collector returns formatted source lines or an empty string. Optional
-   collectors skip themselves when their API key, Telegram auth, or external
-   script is missing.
+   collectors skip themselves when their API key, Telegram auth, X source
+   config, or external script is missing. The X collector delegates fetching to
+   `standalone_x_digest.py` and treats the returned raw JSON as another source
+   stream; the Watcha collector reads product and post endpoints directly and
+   filters to a developer/frontier-AI news slice.
 5. URL deduplication queues normalized links in an in-memory pending set;
    they are not written to `sent_posts` until the digest is successfully
    posted or the editor returns an explicit quiet-hour no-post decision.
@@ -195,9 +216,15 @@ extracts that archive onto the target before the next run.
 ## Source of Truth
 
 - Collector behavior and source list: `collectors.py`.
+- X/Twitter provider cascade, circuit-breaker state, and operator contract:
+  `x_acquire.py`, `standalone_x_digest.py`, `x_sources.example.yaml`, and
+  `docs/x_acquisition.md`.
 - Prompt policy and orchestration order: `main.py`.
 - Semantic deduplication rules and schema: `dedup.py`.
 - Editor decision audit rows: `${VIBE_WORKSPACE}/memory/digest_runs.jsonl`.
+- X acquisition state and handoff files:
+  `${VIBE_WORKSPACE}/memory/x_state.db` and
+  `${VIBE_WORKSPACE}/memory/x_raw.json`.
 - Telegram and LLM CLI integration: `core.py`.
 - Required and optional runtime configuration: `env.example`.
 - Setup, deployment, and operational notes: `README.md`.
@@ -216,9 +243,13 @@ extracts that archive onto the target before the next run.
 - Source-burst ranking: current-run event clusters with repeated observations or
   multiple sources can promote a story during selection, but their counts are
   prompt hints rather than publication facts.
+- X acquisition boundary: X is not treated as a primary source of truth. The
+  cascade prefers non-X mirrors and Bluesky, falls back through X-native
+  providers only when configured, and degrades per source through circuit
+  breakers instead of failing the digest run.
 - Local state: all runtime memory is file-backed under `VIBE_WORKSPACE`, mostly
-  through SQLite plus previous digest text, editor audit JSONL, and fetcher
-  handoff JSON files.
+  through SQLite plus previous digest text, editor audit JSONL, X state, and
+  fetcher handoff JSON files.
 - Graceful degradation: missing optional API keys, missing optional scripts, and
   individual source fetch failures usually return an empty collector result
   instead of aborting the run.
@@ -258,6 +289,12 @@ install the scheduler/log retention pieces after deploy. `make backup` and
   delivery. URL marks are deferred until successful send or explicit quiet-hour
   no-post, but an LLM or delivery failure can still leave semantic state ahead
   of public delivery.
+- X/Twitter acquisition remains brittle by provider; the cascade and circuit
+  breakers reduce blast radius but cannot guarantee complete X coverage without
+  the paid official API or maintained mirrors.
+- Watcha relevance depends on an allowlist over product/post text; it can miss
+  useful Chinese AI-product stories or admit noisy product-launch material when
+  the source changes wording.
 - The quiet-hour sentinel depends on the LLM following the prompt exactly; if it
   is emitted incorrectly, a legitimate small digest may be skipped.
 - HTML formatting uses regular expressions, which can fail on malformed or
@@ -271,19 +308,25 @@ No ADR documents are present in this repository as of this review.
 
 ## Freshness
 
-Reviewed on 2026-06-05 against repository evidence in `README.md`, `main.py`,
-`collectors.py`, `dedup.py`, `core.py`, `standalone_reddit_digest.py`,
-`standalone_telegram_digest.py`, `test_dedup.py`, `env.example`,
-`env.deploy.example`, `Makefile`, `deploy/install-cron.sh`,
+Reviewed on 2026-06-23 against repository evidence in `README.md`, `main.py`,
+`collectors.py`, `dedup.py`, `core.py`, `ranking.py`, `health.py`,
+`eval_digest.py`, `x_acquire.py`, `standalone_x_digest.py`,
+`standalone_reddit_digest.py`, `standalone_telegram_digest.py`, `test_dedup.py`,
+`test_collectors.py`, `test_ranking.py`, `test_health.py`, `test_x_acquire.py`,
+`env.example`, `env.deploy.example`, `x_sources.example.yaml`, `Makefile`,
+`docs/x_acquisition.md`, `deploy/install-cron.sh`,
 `deploy/install-logrotate.sh`, `deploy/merge_channels.py`, and
 `deploy/check_channel.py`.
 
 Current delta captured: source coverage includes the newer applied-AI,
-SRE-depth, engineering-blog, r/singularity, and channel additions; the editor
-prompt now separates applied engineering from fundamental AI/ML noise while
-allowing empirical AI-agent behavior stories into the science lane; quiet hours
-skip Telegram posting via an explicit sentinel; editor input/output is recorded
-in `digest_runs.jsonl`; channel-list updates and readability checks have
-dedicated deploy helpers; and semantic deduplication now combines anchor
-overlap, year/version conflict checks, centroid freezing, cluster size caps, and
-reported-cluster memory to avoid reposting the same story for days.
+SRE-depth, engineering-blog, r/singularity, channel additions, Watcha, and the
+optional X/Twitter acquisition cascade; the editor prompt now separates applied
+engineering from fundamental AI/ML noise while allowing empirical AI-agent
+behavior stories into the science lane; quiet hours skip Telegram posting via an
+explicit sentinel; editor input/output is recorded in `digest_runs.jsonl`;
+channel-list updates and readability checks have dedicated deploy helpers;
+source-health alerts wait for sustained silent streaks and exempt intermittent
+batch feeds; Gemini is pinned by model env to keep the Gemini fallback stable;
+and semantic deduplication now combines anchor overlap, year/version conflict
+checks, centroid freezing, cluster size caps, and reported-cluster memory to
+avoid reposting the same story for days.
