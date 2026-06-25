@@ -7,7 +7,7 @@ import shutil
 import sqlite3
 import time
 import tempfile
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -1023,3 +1023,94 @@ class TestGeminiModelPinning:
         """The budget must clear the ~182s an unpinned gemini run can take, so a
         transient router stall doesn't reintroduce the clipped-at-180s failure."""
         assert core_mod.LLM_TIMEOUT >= 200
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 6. Pending intel — accumulate news across LLM outages
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestPendingIntel:
+    """When the LLM CLI fails, the collected intelligence must be saved and
+    prepended to the next run so a multi-hour LLM outage doesn't drop news."""
+
+    def test_save_load_roundtrip(self, tmp_path):
+        from main import save_pending_intel, load_pending_intel
+        path = str(tmp_path / "pending.txt")
+        save_pending_intel("REDDIT FEED:\n[r/x] title\n", path=path)
+        loaded = load_pending_intel(path=path)
+        assert "REDDIT FEED" in loaded
+        assert "[r/x] title" in loaded
+        assert "# PENDING SINCE" not in loaded  # header stripped
+
+    def test_load_missing_returns_empty(self, tmp_path):
+        from main import load_pending_intel
+        path = str(tmp_path / "nonexistent.txt")
+        assert load_pending_intel(path=path) == ""
+
+    def test_clear_removes_file(self, tmp_path):
+        from main import save_pending_intel, clear_pending_intel, load_pending_intel
+        path = str(tmp_path / "pending.txt")
+        save_pending_intel("data", path=path)
+        clear_pending_intel(path=path)
+        assert load_pending_intel(path=path) == ""
+
+    def test_clear_missing_is_noop(self, tmp_path):
+        from main import clear_pending_intel
+        path = str(tmp_path / "never_existed.txt")
+        clear_pending_intel(path=path)  # must not raise
+
+    def test_save_preserves_original_timestamp(self, tmp_path):
+        """On repeated failures, the first-failure timestamp is kept so the
+        24h expiry clock starts from the first outage, not the latest."""
+        from main import save_pending_intel, load_pending_intel
+        path = str(tmp_path / "pending.txt")
+        save_pending_intel("first", path=path)
+        _, _, rest1 = open(path).read().partition("\n")
+        ts1 = open(path).readline().strip()
+
+        save_pending_intel("second", path=path)
+        ts2 = open(path).readline().strip()
+
+        assert ts1 == ts2  # timestamp preserved
+
+    def test_accumulation(self, tmp_path):
+        """Simulate: run1 fails → save; run2 fails → save combined; run3
+        succeeds → load combined, clear."""
+        from main import save_pending_intel, load_pending_intel, clear_pending_intel
+        path = str(tmp_path / "pending.txt")
+
+        # Run 1: LLM fails, save intel
+        save_pending_intel("REDDIT:\ntitle1", path=path)
+        assert "title1" in load_pending_intel(path=path)
+
+        # Run 2: load pending, add fresh, LLM fails again, save combined
+        pending = load_pending_intel(path=path)
+        combined = pending + "\n\n" + "HACKERNEWS:\ntitle2"
+        save_pending_intel(combined, path=path)
+        loaded = load_pending_intel(path=path)
+        assert "title1" in loaded
+        assert "title2" in loaded
+
+        # Run 3: load pending, add fresh, succeed → clear
+        pending = load_pending_intel(path=path)
+        final = pending + "\n\n" + "HABR:\ntitle3"
+        clear_pending_intel(path=path)
+        assert load_pending_intel(path=path) == ""
+
+    def test_old_pending_is_discarded(self, tmp_path):
+        """Data older than 24h is stale and should be dropped."""
+        from main import save_pending_intel, load_pending_intel
+        path = str(tmp_path / "pending.txt")
+        # Write with a 25h-old timestamp
+        old_ts = (datetime.now() - timedelta(hours=25)).isoformat(timespec="minutes")
+        with open(path, "w") as f:
+            f.write(f"# PENDING SINCE: {old_ts}\n")
+            f.write("old news")
+        assert load_pending_intel(path=path) == ""
+
+    def test_fresh_pending_is_kept(self, tmp_path):
+        from main import save_pending_intel, load_pending_intel
+        path = str(tmp_path / "pending.txt")
+        save_pending_intel("fresh news", path=path)
+        loaded = load_pending_intel(path=path)
+        assert "fresh news" in loaded

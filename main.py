@@ -220,6 +220,10 @@ SOURCE_HEALTH_PATH = os.path.join(WORKSPACE, "memory", "source_health.json")
 # the digest is just this line, we suppress the Telegram post entirely instead
 # of spamming the channel with a "nothing happened" notice.
 NO_NEWS_MARKER = "значимых новостей не зафиксировано"
+# When the LLM CLI fails, the current run's collected intelligence is saved here
+# and prepended to the next run so a multi-hour LLM outage doesn't drop news.
+PENDING_INTEL_PATH = os.path.join(WORKSPACE, "memory", "pending_intel.txt")
+
 
 def load_last_summary():
     try:
@@ -238,6 +242,85 @@ def save_summary(text):
     except OSError as e:
         # Telegram post already went out — don't crash on a memory write failure.
         print(f"save_summary: failed to write {LAST_SUMMARY_PATH}: {e}")
+
+# ── Pending intel: accumulate raw intelligence across LLM outages ──────────
+# When ask_llm returns empty, the current run's all_intelligence_data is saved
+# to pending_intel.txt. On the next run it is prepended to fresh data so the
+# LLM sees the full backlog. After a successful post, the file is deleted.
+
+def load_pending_intel(path=None):
+    """Return accumulated intelligence text from previous failed LLM runs.
+
+    The file starts with a ``# PENDING SINCE: <iso-ts>`` header so the age is
+    known. Data older than 24h is discarded (stale news is no news).
+    """
+    path = path or PENDING_INTEL_PATH
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            content = f.read()
+    except FileNotFoundError:
+        return ""
+    except OSError as e:
+        print(f"load_pending_intel: read error {path}: {e}")
+        return ""
+    content = content.strip()
+    if not content:
+        return ""
+    first_line, nl, rest = content.partition("\n")
+    if not first_line.startswith("# PENDING SINCE: "):
+        # Legacy file without header — use as-is.
+        return content
+    ts_str = first_line[len("# PENDING SINCE: "):].strip()
+    try:
+        age_h = (datetime.now() - datetime.fromisoformat(ts_str)).total_seconds() / 3600
+        if age_h > 24:
+            print(f"load_pending_intel: data is {age_h:.1f}h old (>24h) — discarding")
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+            return ""
+    except (ValueError, TypeError):
+        pass  # Can't parse timestamp — use the data anyway
+    return rest.strip()
+
+
+def save_pending_intel(intel_text, path=None):
+    """Persist intelligence data for the next run when the LLM fails.
+
+    If the file already exists, the original timestamp is preserved so the
+    24h expiry clock starts from the first failure, not the latest.
+    """
+    path = path or PENDING_INTEL_PATH
+    ts = None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            first = f.readline().strip()
+            if first.startswith("# PENDING SINCE: "):
+                ts = first[len("# PENDING SINCE: "):]
+    except (OSError, FileNotFoundError):
+        pass
+    if ts is None:
+        ts = datetime.now().isoformat(timespec="minutes")
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(f"# PENDING SINCE: {ts}\n")
+            f.write(intel_text)
+        print(f"save_pending_intel: saved {len(intel_text)} chars (since {ts})")
+    except OSError as e:
+        print(f"save_pending_intel: write error {path}: {e}")
+
+
+def clear_pending_intel(path=None):
+    """Remove pending intel after successful digest delivery."""
+    path = path or PENDING_INTEL_PATH
+    try:
+        os.unlink(path)
+    except FileNotFoundError:
+        pass
+    except OSError as e:
+        print(f"clear_pending_intel: error {path}: {e}")
 
 def is_empty_digest(summary):
     """True if the editor signalled a genuinely quiet hour (the no-news sentinel)
@@ -410,6 +493,15 @@ def main():
         except Exception as e:
             print(f"health error: {e}")
 
+    # Prepend accumulated intelligence from previous failed LLM runs so a
+    # multi-hour LLM outage doesn't silently drop news. The pending data was
+    # already through dedup in its original run; we just pass it to the LLM
+    # alongside fresh data.
+    pending = load_pending_intel()
+    if pending:
+        print("[PENDING] Prepending accumulated intel from previous failed LLM runs")
+        all_intelligence_data = pending + "\n\n" + all_intelligence_data
+
     # 2. Summary
     if all_intelligence_data.strip():
         last_summary = load_last_summary()
@@ -443,9 +535,10 @@ def main():
             # the default chat and leave URL/event dedup state uncommitted so
             # the next run retries with the same items.
             print("ask_llm returned no output — skipping digest post (no raw dump)")
+            save_pending_intel(all_intelligence_data)
             core.send_tg(
                 "LLM CLI вернул пустой ответ — дайджест пропущен.\n"
-                "Источники собраны, но не закоммичены: следующий запуск повторит попытку.",
+                "Источники сохранены — следующий запуск накопит данные.",
                 title="DIGEST FAILURE",
             )
             dedup.close()
@@ -466,6 +559,7 @@ def main():
             # the next run's "previous report" context.
             print("editor returned the no-news sentinel — skipping post (quiet hour)")
             collectors.commit_seen()
+            clear_pending_intel()
             dedup.close()
             return
 
@@ -478,11 +572,13 @@ def main():
         if core.send_tg(summary, title="WORLD INTEL BRIEF", chat_id=DIGEST_CHAT):
             collectors.commit_seen()
             save_summary(summary)
+            clear_pending_intel()
             # Story published — don't re-surface these clusters as fresh bursts
             # on later runs (the "same news for days" repost).
             dedup.mark_reported([s["cluster_id"] for s in signals])
         else:
             print("send_tg failed — leaving URL marks uncommitted for retry")
+            save_pending_intel(all_intelligence_data)
 
     dedup.close()
 
