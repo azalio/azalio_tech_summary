@@ -701,6 +701,7 @@ class Collectors:
             "Ars Technica": "https://feeds.arstechnica.com/arstechnica/technology-lab",
             "The Verge": "https://www.theverge.com/rss/index.xml",
             "Wired": "https://www.wired.com/feed/rss",
+            "Kod.ru": "https://kod.ru/rss",
         }
         return self._fetch_rss(feeds, "TECH NEWS", max_per_feed=5, max_total=20)
 
