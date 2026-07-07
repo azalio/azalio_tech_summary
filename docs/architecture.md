@@ -4,15 +4,21 @@
 
 `azalio_tech_summary` is a personal hourly technology-news digest bot. It
 collects candidate headlines from RSS feeds, REST APIs, Reddit, Telegram
-channels, Hacker News, Habr, GitHub Trending, HuggingFace Daily Papers, arXiv,
-Claude release notes, NVD/CISA/security feeds, Google News, applied AI/SRE
-engineering feeds, Watcha, optional X/Twitter acquisition, and optional external
-collector scripts. It removes repeated
+channels, Hacker News, Habr, Kod.ru, GitHub Trending, HuggingFace Daily Papers,
+arXiv, Claude release notes, NVD/CISA/security feeds, Google News, applied
+AI/SRE engineering feeds, Watcha, optional X/Twitter acquisition, and optional
+external collector scripts. It removes repeated
 stories with URL and semantic event deduplication, asks an LLM CLI to write a
 compact Russian digest, and posts the result to Telegram. Current-run event
 clusters are also surfaced into the prompt as ranking-only source-burst signals
 so repeated coverage from multiple sources can influence section priority
 without becoming an emitted fact by itself.
+
+When the LLM or Telegram delivery layer fails, the bot preserves the collected
+intelligence in `${VIBE_WORKSPACE}/memory/pending_intel.txt` and prepends it to
+the next successful editing attempt. This keeps a temporary model outage from
+dropping the already collected news window while still refusing to publish raw
+collector output.
 
 The repository is intentionally small: the production path is a single Python
 process started from `main.py`, with persistent local state under
@@ -37,6 +43,8 @@ In scope:
 - Calling an installed LLM CLI, preferring Gemini and falling back to Codex.
 - Refusing to publish raw collector output when the LLM layer returns no digest,
   while notifying the operator and preserving retry state.
+- Accumulating unedited intelligence for up to 24 hours across LLM or Telegram
+  failures so later runs can retry the same news window.
 - Formatting Markdown-like LLM output as Telegram-compatible HTML and splitting
   long digests into multiple Telegram messages, including line-bounded splits
   for oversized topic sections.
@@ -63,11 +71,15 @@ Out of scope:
   security, and science.
 - Avoid repeating stories already published in the previous digest or captured
   by another source.
+- Avoid losing collected stories during temporary LLM/Telegram outages.
 - Allow optional collectors to fail or be disabled without stopping the whole
   run.
 - Keep deployment simple enough for a cron-driven personal server.
 - Preserve local state across runs so deduplication and prompt context work
   across digest windows.
+- Bias the AI/ML section toward practical operating cost, inference access, and
+  AI-coding-tool availability when those items give the reader an immediate
+  action.
 
 ## System Context
 
@@ -78,7 +90,8 @@ variables documented in `env.example`.
 
 The default output channel is `TELEGRAM_DIGEST_CHAT`; `TELEGRAM_DEFAULT_CHAT_ID`
 is used as the fallback chat. `VIBE_WORKSPACE` controls the directory that holds
-SQLite databases, raw collector handoff JSON, and the previous digest text.
+SQLite databases, raw collector handoff JSON, pending unedited intelligence, and
+the previous digest text.
 
 ## Core Structure
 
@@ -87,7 +100,8 @@ SQLite databases, raw collector handoff JSON, and the previous digest text.
   LLM through `VibeCore`, posts the result, and stores the latest summary. It
   also formats current-run `event_signals` from semantic clusters, injects them
   into the prompt as ranking-only context, logs editor input/output rows to
-  `digest_runs.jsonl`, and handles the quiet-hour no-post sentinel.
+  `digest_runs.jsonl`, prepends/clears pending intelligence around delivery
+  outcomes, and handles the quiet-hour no-post sentinel.
 - `collectors.py` owns source integrations. It contains RSS helpers, URL
   normalization, `sent_posts` URL deduplication, optional API-key collectors,
   source-specific formatting for the prompt payload, and handoff points for
@@ -96,7 +110,8 @@ SQLite databases, raw collector handoff JSON, and the previous digest text.
   source-native engagement where available) and increments per-collector item
   counts for source-health tracking. The Watcha collector keeps only product,
   release, security, AI-model, developer-tool, and daily-roundup items before
-  they reach the digest prompt.
+  they reach the digest prompt. The tech-news RSS set includes Kod.ru in
+  addition to the broader English-language tech press.
 - `ranking.py` fuses the structured candidates into a single diversity-capped
   priority index handed to the editor as a ranking-only hint. It normalizes each
   source's engagement metric (HN points, Reddit score, Habr/HF upvotes, GitHub
@@ -171,29 +186,32 @@ SQLite databases, raw collector handoff JSON, and the previous digest text.
    posted or the editor returns an explicit quiet-hour no-post decision.
    Semantic deduplication creates or updates event clusters for non-duplicate
    titles eagerly during this step.
-6. `main.py` inserts the previous digest and new source data into `VIBE_PROMPT`.
-7. `main.py` formats current-run event signals and includes them in the prompt
+6. `main.py` loads non-stale `pending_intel.txt`, if any, and prepends that
+   unedited backlog to the fresh source payload.
+7. `main.py` inserts the previous digest and new source data into `VIBE_PROMPT`.
+8. `main.py` formats current-run event signals and includes them in the prompt
    as ranking-only context. In dry-run mode, the prompt is printed. Otherwise
    `VibeCore.ask_llm` calls Codex first and then Gemini if Codex is unavailable
    or fails. The fallback
    path is CLI-specific: Gemini reads stdin/stdout directly, while Codex writes
    its final answer to a temporary output file.
-8. `VibeCore.send_tg` formats the digest, posts it to Telegram, splits it by
+9. `VibeCore.send_tg` formats the digest, posts it to Telegram, splits it by
    topic section when it exceeds the Telegram message limit, line-splits any
    single oversized section, and returns whether every part was delivered.
-9. `main.py` appends the editor input/output record to
+10. `main.py` appends the editor input/output record to
    `memory/digest_runs.jsonl`. If the digest is the quiet-hour sentinel, it
-   skips Telegram publication, commits URL marks, and leaves the previous real
-   digest as the next run's context anchor.
-10. If no LLM-formatted digest is returned, the bot sends an operator failure
+   skips Telegram publication, commits URL marks, clears pending intel, and
+   leaves the previous real digest as the next run's context anchor.
+11. If no LLM-formatted digest is returned, the bot sends an operator failure
    notice to the default chat and exits without posting raw collector lines or
-   committing URL state.
-11. On a successful digest send, `Collectors.commit_seen` persists the pending
+   committing URL state, but saves the current intelligence for the next run.
+12. On a successful digest send, `Collectors.commit_seen` persists the pending
    URL marks to `sent_posts` and the posted text is written to
-   `last_intel_summary.txt` for the next run. On delivery failure, both are
-   skipped so the next run's URL dedup gate sees the same items as un-seen.
-   Successfully posted source-burst clusters are marked reported so they do not
-   keep re-entering `event_signals()` on later runs.
+   `last_intel_summary.txt` for the next run, pending intel is cleared, and
+   successfully posted source-burst clusters are marked reported so they do not
+   keep re-entering `event_signals()` on later runs. On delivery failure, URL
+   marks and reported-cluster marks are skipped and the current intelligence is
+   saved for retry.
 
 ### Deployment Flow
 
@@ -211,7 +229,9 @@ rotation for `main.log`, `reddit.log`, and `workspace/memory/digest_runs.jsonl`.
 values through `deploy/merge_channels.py`; `make check-channels CHANNELS=...`
 runs the Telethon readability probe from `deploy/check_channel.py`. `make
 backup` snapshots remote `.env` plus `workspace/`; `make restore BACKUP=...`
-extracts that archive onto the target before the next run.
+extracts that archive onto the target before the next run. Because pending
+intelligence lives under `workspace/memory/`, it is included in the same backup
+surface as URL/event dedup state and the previous digest.
 
 ## Source of Truth
 
@@ -222,6 +242,8 @@ extracts that archive onto the target before the next run.
 - Prompt policy and orchestration order: `main.py`.
 - Semantic deduplication rules and schema: `dedup.py`.
 - Editor decision audit rows: `${VIBE_WORKSPACE}/memory/digest_runs.jsonl`.
+- Pending unedited intelligence retry buffer:
+  `${VIBE_WORKSPACE}/memory/pending_intel.txt`.
 - X acquisition state and handoff files:
   `${VIBE_WORKSPACE}/memory/x_state.db` and
   `${VIBE_WORKSPACE}/memory/x_raw.json`.
@@ -232,6 +254,8 @@ extracts that archive onto the target before the next run.
   `deploy/install-logrotate.sh`, and `Makefile`.
 - Channel-list operator helpers: `deploy/merge_channels.py` and
   `deploy/check_channel.py`.
+- Applied AI/ML editorial policy, including cheap LLM access and AI coding tool
+  access rules: `main.py` `VIBE_PROMPT`.
 
 ## Cross-cutting Concepts
 
@@ -248,8 +272,15 @@ extracts that archive onto the target before the next run.
   providers only when configured, and degrades per source through circuit
   breakers instead of failing the digest run.
 - Local state: all runtime memory is file-backed under `VIBE_WORKSPACE`, mostly
-  through SQLite plus previous digest text, editor audit JSONL, X state, and
-  fetcher handoff JSON files.
+  through SQLite plus previous digest text, pending unedited intelligence,
+  editor audit JSONL, X state, and fetcher handoff JSON files.
+- Outage retry boundary: URL marks are not committed until publication or an
+  explicit quiet-hour no-post decision, while `pending_intel.txt` keeps the
+  unedited source payload for a bounded retry window. This favors not losing
+  news over pretending a failed LLM run produced a digest.
+- Editorial cost/access priority: concrete cheap access to LLMs, model credits,
+  inference price drops, model gateways, and AI-coding-tool access changes are
+  intentionally promoted because they give the reader an immediate action.
 - Graceful degradation: missing optional API keys, missing optional scripts, and
   individual source fetch failures usually return an empty collector result
   instead of aborting the run.
@@ -292,6 +323,10 @@ install the scheduler/log retention pieces after deploy. `make backup` and
 - X/Twitter acquisition remains brittle by provider; the cascade and circuit
   breakers reduce blast radius but cannot guarantee complete X coverage without
   the paid official API or maintained mirrors.
+- `pending_intel.txt` intentionally stores raw collected source text during
+  failures. It expires after 24 hours, but while present it can make the next
+  prompt larger and can contain stale items if the operator does not notice
+  repeated LLM failures.
 - Watcha relevance depends on an allowlist over product/post text; it can miss
   useful Chinese AI-product stories or admit noisy product-launch material when
   the source changes wording.
@@ -308,7 +343,7 @@ No ADR documents are present in this repository as of this review.
 
 ## Freshness
 
-Reviewed on 2026-06-23 against repository evidence in `README.md`, `main.py`,
+Reviewed on 2026-07-07 against repository evidence in `README.md`, `main.py`,
 `collectors.py`, `dedup.py`, `core.py`, `ranking.py`, `health.py`,
 `eval_digest.py`, `x_acquire.py`, `standalone_x_digest.py`,
 `standalone_reddit_digest.py`, `standalone_telegram_digest.py`, `test_dedup.py`,
@@ -318,15 +353,12 @@ Reviewed on 2026-06-23 against repository evidence in `README.md`, `main.py`,
 `deploy/install-logrotate.sh`, `deploy/merge_channels.py`, and
 `deploy/check_channel.py`.
 
-Current delta captured: source coverage includes the newer applied-AI,
-SRE-depth, engineering-blog, r/singularity, channel additions, Watcha, and the
-optional X/Twitter acquisition cascade; the editor prompt now separates applied
-engineering from fundamental AI/ML noise while allowing empirical AI-agent
-behavior stories into the science lane; quiet hours skip Telegram posting via an
-explicit sentinel; editor input/output is recorded in `digest_runs.jsonl`;
-channel-list updates and readability checks have dedicated deploy helpers;
-source-health alerts wait for sustained silent streaks and exempt intermittent
-batch feeds; Gemini is pinned by model env to keep the Gemini fallback stable;
-and semantic deduplication now combines anchor overlap, year/version conflict
-checks, centroid freezing, cluster size caps, and reported-cluster memory to
-avoid reposting the same story for days.
+Current delta captured: source coverage now includes Kod.ru; the editor prompt
+explicitly prioritizes concrete cheap LLM access, model/API price changes,
+credits, model gateways, and AI-coding-tool access updates when they create an
+immediate action for the reader; and the run loop now persists
+`pending_intel.txt` across LLM or Telegram failures so already collected news is
+retried for up to 24 hours instead of being silently dropped. The earlier
+architecture remains valid for Watcha/X acquisition, source-health baselines,
+quiet-hour no-post handling, editor audit rows, Gemini/Codex CLI boundaries, and
+semantic deduplication.
