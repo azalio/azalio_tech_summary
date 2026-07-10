@@ -192,6 +192,28 @@ class Collectors:
             return 0.5
         return max(0.0, min(1.0, 1.0 - age / span))
 
+    @staticmethod
+    def _freshness_from_iso(iso_ts, max_age_days):
+        """Map an ISO-8601 date/datetime to a 0..1 recency score.
+
+        Date-string counterpart of ``_freshness_from_struct_time`` (used by the
+        TC260 scrape, whose listings carry a ``YYYY-MM-DD`` date rather than an
+        RSS time tuple). 1.0 = now, decaying linearly to 0.0 at max_age_days;
+        0.5 (neutral) when the value is missing or unparseable."""
+        if not iso_ts:
+            return 0.5
+        try:
+            ts = datetime.fromisoformat(str(iso_ts).replace("Z", "+00:00"))
+        except ValueError:
+            return 0.5
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        span = max_age_days * 86400
+        if span <= 0:
+            return 0.5
+        age = (datetime.now(timezone.utc) - ts).total_seconds()
+        return max(0.0, min(1.0, 1.0 - age / span))
+
     def _is_seen(self, url):
         if not url: return False
         url = self._normalize_url(url)
@@ -897,6 +919,106 @@ class Collectors:
               f"(filtered {prod_skipped}), {len(post_lines)} posts "
               f"(filtered {post_skipped})")
         return "\n".join(blocks)
+
+    @staticmethod
+    def _parse_tc260_listing(html):
+        """Parse a TC260 (tc260.org.cn) category listing page into a list of
+        ``(title, article_path, date_iso)`` tuples.
+
+        The listing is server-rendered — each item is ``div.hygd-c div.item``
+        with an ``<a href="/portal/article/…">`` title and a
+        ``<span>YYYY-MM-DD</span>`` date. Pure (no network), so it's unit-tested
+        offline against saved HTML. ``date_iso`` is normalized to
+        ``YYYY-MM-DD`` or "" when the item carries no parseable date."""
+        from bs4 import BeautifulSoup
+        out = []
+        soup = BeautifulSoup(html or "", "html.parser")
+        for item in soup.select("div.hygd-c div.item"):
+            a = item.find("a")
+            if not a:
+                continue
+            href = a.get("href")
+            path = href.strip() if isinstance(href, str) else ""
+            if not path.startswith("/portal/article/"):
+                continue
+            title = re.sub(r"\s+", " ", a.get_text()).strip()
+            if not title:
+                continue
+            span = item.find("span")
+            raw_date = span.get_text(strip=True) if span else ""
+            m = re.search(r"(20\d{2})[-/年](\d{1,2})[-/月](\d{1,2})", raw_date)
+            date_iso = (
+                f"{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
+                if m else ""
+            )
+            out.append((title, path, date_iso))
+        return out
+
+    def collect_tc260(self, max_per_cat=4, max_total=8, max_age_days=21):
+        """全国网络安全标准化技术委员会 (TC260, tc260.org.cn) — China's national
+        cybersecurity standardization committee. There is no RSS; the news
+        listings are server-rendered HTML, scraped here.
+
+        Covers 新闻动态 (news/events, catalog/1) and 工作组动态 (working-group
+        updates, catalog/3): national-standard launches, AI-security /
+        supply-chain / data-security standardization signal, often ahead of
+        English-language coverage. zh titles pass through verbatim to the LLM
+        editor, which translates them in the digest step (same as
+        collect_china_tech / collect_watcha). Each category degrades to an empty
+        section on failure, so a TC260 outage never breaks the run."""
+        print("Fetching TC260 (网安标委)...")
+        from importlib.util import find_spec
+        if find_spec("bs4") is None:
+            print("  TC260 skipped: bs4 not installed")
+            return ""
+        base = "https://www.tc260.org.cn"
+        categories = {"新闻动态": "1", "工作组动态": "3"}
+        lines = []
+        count = 0
+        for cat_name, cat_id in categories.items():
+            if count >= max_total:
+                break
+            try:
+                resp = requests.get(
+                    f"{base}/portal/cms/catalog/{cat_id}",
+                    headers={"User-Agent": "Mozilla/5.0 vibe-intel/1.0"},
+                    timeout=15,
+                )
+                resp.raise_for_status()
+            except Exception as e:
+                print(f"  TC260 error {cat_name}: {e}")
+                continue
+            per_cat = 0
+            for title, path, date_iso in self._parse_tc260_listing(resp.text):
+                if count >= max_total or per_cat >= max_per_cat:
+                    break
+                # Drop stale items: catalog/3 in particular is low-frequency
+                # (months between updates), so without a recency gate it would
+                # keep resurfacing old working-group meeting announcements.
+                if not self._is_recent(date_iso, days=max_age_days):
+                    continue
+                url = base + path
+                if self._is_seen(url):
+                    continue
+                self._mark_seen(url, f"TC260:{cat_name}")
+                if self._is_semantic_dup(title, f"TC260:{cat_name}", url, ""):
+                    continue
+                line = f"- [{cat_name}] {title} ({date_iso}) - Link: {url}"
+                lines.append(line)
+                # No engagement metric (a committee notice board); the listing
+                # date is the only ranking signal, same as the RSS collectors.
+                self._add_candidate(
+                    "TC260", cat_name, title, url, line=line,
+                    freshness=self._freshness_from_iso(date_iso, max_age_days),
+                )
+                count += 1
+                per_cat += 1
+        if not lines:
+            return ""
+        return (
+            "TC260 网络安全标准 (China cybersecurity standardization committee, "
+            "zh — translate in digest):\n" + "\n".join(lines)
+        )
 
     def collect_google_news(self):
         """Google News RSS for targeted topics."""

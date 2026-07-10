@@ -6,7 +6,8 @@
 collects candidate headlines from RSS feeds, REST APIs, Reddit, Telegram
 channels, Hacker News, Habr, Kod.ru, GitHub Trending, HuggingFace Daily Papers,
 arXiv, Claude release notes, NVD/CISA/security feeds, Google News, applied
-AI/SRE engineering feeds, Watcha, optional X/Twitter acquisition, and optional
+AI/SRE engineering feeds, Watcha, TC260 (China cybersecurity standards),
+optional X/Twitter acquisition, and optional
 external collector scripts. It removes repeated
 stories with URL and semantic event deduplication, asks an LLM CLI to write a
 compact Russian digest, and posts the result to Telegram. Current-run event
@@ -111,7 +112,11 @@ the previous digest text.
   counts for source-health tracking. The Watcha collector keeps only product,
   release, security, AI-model, developer-tool, and daily-roundup items before
   they reach the digest prompt. The tech-news RSS set includes Kod.ru in
-  addition to the broader English-language tech press.
+  addition to the broader English-language tech press. TC260
+  (`collect_tc260`) has no RSS, so it scrapes the committee's server-rendered
+  news listings (新闻动态 + 工作组动态) with BeautifulSoup, filtered to a recency
+  window; its zh titles pass through verbatim for the editor to translate, like
+  the Watcha and China-tech collectors.
 - `ranking.py` fuses the structured candidates into a single diversity-capped
   priority index handed to the editor as a ranking-only hint. It normalizes each
   source's engagement metric (HN points, Reddit score, Habr/HF upvotes, GitHub
@@ -353,7 +358,8 @@ Reviewed on 2026-07-07 against repository evidence in `README.md`, `main.py`,
 `deploy/install-logrotate.sh`, `deploy/merge_channels.py`, and
 `deploy/check_channel.py`.
 
-Current delta captured: source coverage now includes Kod.ru; the editor prompt
+Current delta captured: source coverage now includes Kod.ru and TC260
+(全国网络安全标准化技术委员会, HTML-scraped); the editor prompt
 explicitly prioritizes concrete cheap LLM access, model/API price changes,
 credits, model gateways, and AI-coding-tool access updates when they create an
 immediate action for the reader; and the run loop now persists

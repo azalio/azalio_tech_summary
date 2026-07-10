@@ -432,6 +432,8 @@ def main():
     if china_tech: all_intelligence_data += "\n" + china_tech
     watcha = collectors.collect_watcha()
     if watcha: all_intelligence_data += "\n" + watcha
+    tc260 = collectors.collect_tc260()
+    if tc260: all_intelligence_data += "\n" + tc260
     arxiv = collectors.collect_arxiv()
     if arxiv: all_intelligence_data += "\n" + arxiv
     tech = collectors.collect_tech_news()
