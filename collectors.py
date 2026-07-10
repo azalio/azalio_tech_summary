@@ -694,7 +694,7 @@ class Collectors:
         return self._fetch_rss(feeds, "ARXIV AI/ML PAPERS", max_per_feed=5, max_total=30)
 
     def collect_tech_news(self):
-        """TechCrunch, Ars Technica, Wired, The Verge RSS."""
+        """TechCrunch, Ars Technica, Wired, The Verge, Kod.ru, TechPowerUp RSS."""
         print("Fetching Tech News RSS...")
         feeds = {
             "TechCrunch": "https://techcrunch.com/feed/",
@@ -702,6 +702,7 @@ class Collectors:
             "The Verge": "https://www.theverge.com/rss/index.xml",
             "Wired": "https://www.wired.com/feed/rss",
             "Kod.ru": "https://kod.ru/rss",
+            "TechPowerUp": "https://www.techpowerup.com/rss/news",
         }
         return self._fetch_rss(feeds, "TECH NEWS", max_per_feed=5, max_total=20)
 
