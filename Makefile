@@ -1,7 +1,7 @@
 SHELL := /bin/bash
 
 # Per-host deploy config — keep it out of the public repo.
-# Copy .env.deploy.example to .env.deploy and fill SSH_JUMP / SSH_TARGET / REMOTE_DIR.
+# Copy env.deploy.example to .env.deploy and fill SSH_JUMP / SSH_TARGET / REMOTE_DIR.
 -include .env.deploy
 
 # Fallback defaults; override on the command line if .env.deploy is missing.
