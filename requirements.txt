@@ -10,3 +10,5 @@ pyyaml>=6.0  # x_sources.yaml for the X acquisition cascade (x_acquire.py)
 # Optional X providers (install only if you enable that layer in .env):
 #   twscrape>=0.13   # L3 session scraper  (X_TWSCRAPE_ENABLED=1)
 #   playwright>=1.44  # L4 logged-in browser (X_BROWSER_STATE=...)
+PySocks>=1.7.1
+python-socks[asyncio]>=2.4

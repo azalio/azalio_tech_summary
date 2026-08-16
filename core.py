@@ -18,6 +18,19 @@ except ValueError:
 # GEMINI_MODEL if the CLI's model id changes; set empty to let the router pick.
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3-flash-preview")
 
+# api.telegram.org недоступен с этой VM напрямую (исходящий трафик к подсетям
+# Telegram дропается), поэтому Bot API ходит через SOCKS5-туннель до VPN-хоста
+# — его держит systemd-юнит tg-tunnel.service. Пустое значение = слать напрямую.
+TELEGRAM_PROXY = os.environ.get("TELEGRAM_PROXY", "").strip()
+TG_PROXIES = {"http": TELEGRAM_PROXY, "https": TELEGRAM_PROXY} if TELEGRAM_PROXY else None
+
+# Ollama Cloud — основной провайдер LLM. Пустой ключ = не пробовать, сразу CLI.
+# Модель менять через OLLAMA_MODEL: kimi-k3 требует extra usage сверх тарифа,
+# minimax-m3 входит в план и на промпте дайджеста отвечает за ~4с.
+OLLAMA_API_KEY = os.environ.get("OLLAMA_API_KEY", "").strip()
+OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "minimax-m3")
+OLLAMA_URL = os.environ.get("OLLAMA_URL", "https://ollama.com/v1/chat/completions")
+
 class VibeCore:
     def __init__(self):
         self.tg_token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
@@ -110,6 +123,15 @@ class VibeCore:
         handle = s.lstrip("@")
         return f'\n\n—\n📡 <a href="https://t.me/{handle}">@{handle}</a>'
 
+    def _scrub(self, msg):
+        """Вырезает токен бота из текста ошибки.
+
+        requests кладёт полный URL в текст исключения, а токен — часть пути
+        (/bot<TOKEN>/sendMessage), поэтому без этого он утекает в main.log.
+        """
+        text = str(msg)
+        return text.replace(self.tg_token, "<TOKEN>") if self.tg_token else text
+
     def _send_one(self, url, text, chat_id=None):
         """Send one message, fallback to plain text if HTML fails.
 
@@ -124,32 +146,32 @@ class VibeCore:
                 "chat_id": target_chat,
                 "text": text,
                 "parse_mode": "HTML",
-            }, timeout=30)
+            }, timeout=30, proxies=TG_PROXIES)
             result = resp.json()
         except (requests.RequestException, ValueError) as e:
-            print(f"  TG HTML request error: {e}")
-            result = {"ok": False, "description": str(e)}
+            print(f"  TG HTML request error: {self._scrub(e)}")
+            result = {"ok": False, "description": self._scrub(e)}
 
         if result.get("ok"):
             return True
 
-        print(f"  TG HTML error: {result.get('description', 'unknown')}")
+        print(f"  TG HTML error: {self._scrub(result.get('description', 'unknown'))}")
         # Fallback: strip tags and send as plain text
         plain = re.sub(r'<[^>]+>', '', text)
         try:
             resp = requests.post(url, data={
                 "chat_id": target_chat,
                 "text": plain,
-            }, timeout=30)
+            }, timeout=30, proxies=TG_PROXIES)
             result = resp.json()
         except (requests.RequestException, ValueError) as e:
-            print(f"  TG plain request error: {e}")
+            print(f"  TG plain request error: {self._scrub(e)}")
             return False
 
         if result.get("ok"):
             print("  TG fallback OK (plain text)")
             return True
-        print(f"  TG plain error: {result.get('description', 'unknown')}")
+        print(f"  TG plain error: {self._scrub(result.get('description', 'unknown'))}")
         return False
 
     def send_tg(self, text, title="INTEL", chat_id=None):
@@ -233,6 +255,30 @@ class VibeCore:
                 all_ok = False
         return all_ok
 
+    def _run_ollama(self, prompt, timeout):
+        """Спросить Ollama Cloud через OpenAI-совместимый endpoint.
+
+        Возвращает текст ответа. Кидает исключение на ошибке API — в частности
+        на "extra usage only", когда выбранная модель вне тарифа.
+        """
+        resp = requests.post(
+            OLLAMA_URL,
+            headers={
+                "Authorization": f"Bearer {OLLAMA_API_KEY}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": OLLAMA_MODEL,
+                "messages": [{"role": "user", "content": prompt}],
+                "stream": False,
+            },
+            timeout=timeout,
+        )
+        data = resp.json()
+        if "error" in data:
+            raise RuntimeError(data["error"].get("message", "unknown error"))
+        return data["choices"][0]["message"]["content"]
+
     def ask_llm(self, prompt):
         """Run an LLM CLI (gemini/codex) in cron-safe mode.
 
@@ -240,6 +286,20 @@ class VibeCore:
         Codex prints a decorated transcript to stdout, so we redirect its
         final-message output to a temp file and read it back.
         """
+
+        # Ollama Cloud идёт первым: оба CLI отказали не по нашей вине — codex
+        # режет регион (403 unsupported_country_region_territory), а gemini-cli
+        # больше не обслуживает индивидуальный тариф (IneligibleTierError).
+        # Ollama — HTTP, без CLI и без их проблем с PATH под cron.
+        if OLLAMA_API_KEY:
+            print(f"Trying ollama ({OLLAMA_MODEL})...")
+            try:
+                out = self._run_ollama(prompt, timeout=LLM_TIMEOUT)
+            except Exception as e:
+                print(f"ollama failed: {e}")
+            else:
+                if out and out.strip():
+                    return out.strip()
 
         # Extend PATH for subprocesses (cron runs with a minimal PATH)
         extra_paths = [

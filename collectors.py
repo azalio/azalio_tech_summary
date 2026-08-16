@@ -632,7 +632,7 @@ class Collectors:
             if self._is_seen(paper_url):
                 continue
             self._mark_seen(paper_url, "HFPapers")
-            title = p.get("title", "").strip()
+            title = (p.get("title") or "").strip()
             desc = p.get("ai_summary") or p.get("summary", "")
             desc = desc[:300].strip()
             if self._is_semantic_dup(title, "HFPapers", paper_url, desc):
@@ -672,7 +672,7 @@ class Collectors:
             self._mark_seen(hn_url, "HackerNews")
             if story_url != hn_url:
                 self._mark_seen(story_url, "HackerNews")
-            title = h.get("title", "").strip()
+            title = (h.get("title") or "").strip()
             points = h.get("points", 0)
             if self._is_semantic_dup(title, "HackerNews", story_url):
                 continue
@@ -890,7 +890,7 @@ class Collectors:
             if self._is_seen(url):
                 continue
             self._mark_seen(url, "Watcha")
-            product = (post.get("product") or {}).get("name", "").strip()
+            product = ((post.get("product") or {}).get("name") or "").strip()
             upvotes = (post.get("stats") or {}).get("upvotes") or 0
             dup_key = f"{title} [{product}]" if product else title
             if self._is_semantic_dup(dup_key, "Watcha", url, body):
@@ -1080,7 +1080,7 @@ class Collectors:
             if self._is_seen(habr_url):
                 continue
             self._mark_seen(habr_url, "Habr")
-            title = art.get("titleHtml", "").strip()
+            title = (art.get("titleHtml") or "").strip()
             stats = art.get("statistics", {})
             score = stats.get("score", 0)
             if score < 100:
@@ -1362,7 +1362,7 @@ class Collectors:
                 if self._is_seen(link):
                     continue
                 self._mark_seen(link, f"NewsAPI:{label}")
-                title = art.get("title", "").strip()
+                title = (art.get("title") or "").strip()
                 if not title or title == "[Removed]":
                     continue
                 source_name = art.get("source", {}).get("name", "")
@@ -1462,7 +1462,7 @@ class Collectors:
             desc = ""
             for d in cve.get("descriptions", []):
                 if d.get("lang") == "en":
-                    desc = d.get("value", "").strip()
+                    desc = (d.get("value") or "").strip()
                     break
             # CVSS: prefer v4.0 → v3.1 → v3.0 → v2 (most recent metric standard wins).
             score = 0.0
@@ -1567,7 +1567,7 @@ class Collectors:
                     if self._is_seen(link):
                         continue
                     self._mark_seen(link, f"finnhub:{category}")
-                    title = item.get("headline", "").strip()
+                    title = (item.get("headline") or "").strip()
                     source = item.get("source", "")
                     desc = item.get("summary", "")[:300]
                     if self._is_semantic_dup(title, f"finnhub:{source}", link, desc):
