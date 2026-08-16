@@ -53,6 +53,27 @@ AUTH_PENDING_FILE = SESSION_FILE.parent / ".telegram-auth-pending.json"
 RAW_JSON_PATH = WORKSPACE / "memory" / "telegram_raw.json"
 
 
+def proxy_kwargs() -> dict:
+    """Прокси для MTProto — подсети Telegram с этой VM напрямую недоступны.
+
+    Используем тот же SOCKS5-туннель, что и Bot API в core.py; его держит
+    systemd-юнит tg-tunnel.service. Пустой TELEGRAM_PROXY = идти напрямую.
+    """
+    raw = os.environ.get("TELEGRAM_PROXY", "").strip()
+    if not raw:
+        return {}
+    m = re.match(r"^socks5h?://(?:([^:@]+):([^@]*)@)?([^:/]+):(\d+)$", raw)
+    if not m:
+        print(f"⚠️  TELEGRAM_PROXY не разобран, иду напрямую: {raw}")
+        return {}
+    user, password, host, port = m.groups()
+    proxy = {"proxy_type": "socks5", "addr": host, "port": int(port)}
+    if user:
+        proxy["username"] = user
+        proxy["password"] = password or ""
+    return {"proxy": proxy}
+
+
 def load_config() -> dict:
     """Phone is optional here — only `auth-start` actually needs it; fetch/whoami
     run off the existing session file.
@@ -155,7 +176,7 @@ async def cmd_auth_start(cfg: dict) -> None:
         )
     print("🔐 Telegram auth (step 1): sending SMS code")
     SESSION_FILE.parent.mkdir(parents=True, exist_ok=True)
-    client = TelegramClient(str(SESSION_FILE), cfg["api_id"], cfg["api_hash"])
+    client = TelegramClient(str(SESSION_FILE), cfg["api_id"], cfg["api_hash"], **proxy_kwargs())
     await client.connect()
     try:
         if await client.is_user_authorized():
@@ -206,7 +227,7 @@ async def cmd_auth_complete(cfg: dict, code: str, password: str | None) -> None:
             f"   Delete {AUTH_PENDING_FILE} and rerun `auth-start`."
         )
     print("🔐 Telegram auth (step 2): confirming code")
-    client = TelegramClient(str(SESSION_FILE), cfg["api_id"], cfg["api_hash"])
+    client = TelegramClient(str(SESSION_FILE), cfg["api_id"], cfg["api_hash"], **proxy_kwargs())
     await client.connect()
     try:
         try:
@@ -237,7 +258,7 @@ async def cmd_auth_complete(cfg: dict, code: str, password: str | None) -> None:
 
 
 async def cmd_whoami(cfg: dict) -> None:
-    async with TelegramClient(str(SESSION_FILE), cfg["api_id"], cfg["api_hash"]) as client:
+    async with TelegramClient(str(SESSION_FILE), cfg["api_id"], cfg["api_hash"], **proxy_kwargs()) as client:
         if not await client.is_user_authorized():
             sys.exit("❌ No session — run `auth-start` + `auth-complete` first.")
         me = await client.get_me()
@@ -271,7 +292,7 @@ async def cmd_fetch(cfg: dict) -> None:
     # fetched-counter and age cutoff are the real stop conditions.
     iter_cap = POSTS_PER_CHANNEL * 5
 
-    async with TelegramClient(str(SESSION_FILE), cfg["api_id"], cfg["api_hash"]) as client:
+    async with TelegramClient(str(SESSION_FILE), cfg["api_id"], cfg["api_hash"], **proxy_kwargs()) as client:
         if not await client.is_user_authorized():
             sys.exit("❌ No Telegram session. Run `auth-start` + `auth-complete`.")
 

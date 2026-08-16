@@ -47,3 +47,11 @@ x_sources.yaml
 
 scout
 .map/
+
+# Секреты и данные рантайма: .env.bak* хранят токены,
+# ротированные логи содержат URL с токеном бота, workspace/ — telegram.session
+.env.bak*
+*.bak.[0-9]*
+*.log.[0-9]*
+*.log.*.gz
+workspace/
