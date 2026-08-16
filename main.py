@@ -16,7 +16,8 @@ from dedup import EventDedup
 import ranking
 import health
 
-VIBE_PROMPT = """Ты — редактор персонального hourly-дайджеста на русском языке для DevOps/SRE инженера. Вторичные интересы: AI/ML, наука.
+VIBE_PROMPT = """Ты — редактор персонального ежедневного дайджеста на русском языке для DevOps/SRE инженера. Вторичные интересы: AI/ML, наука.
+Выпуск выходит один раз в сутки, поэтому на входе — материал, накопленный за целые сутки, а не за час.
 
 СТИЛЬ:
 • Строгий аналитический русский язык, без воды и PR-тона
@@ -107,17 +108,24 @@ VIBE_PROMPT = """Ты — редактор персонального hourly-д�
 ⚠️ ФОКУС: DevOps/SRE, cloud, Kubernetes, observability, infra tooling — главный приоритет. AI/ML и наука — второй приоритет. Security учитывай только при прямом операционном влиянии на infra/cloud/SRE/supply chain. Политику ПРОПУСКАЙ, кроме событий с прямым влиянием на технологии, рынки или глобальную стабильность.
 
 СТРУКТУРА ОТЧЁТА (пропускай пустые секции):
-⛔ БЕЗ вступления. Никаких "За прошедший час...", "Зафиксированы события...", "Ниже представлены..." и т.п. Сразу начинай с первой секции (`**🔥 В ФОКУСЕ**` или другой).
+⛔ БЕЗ вступления. Никаких "За прошедшие сутки...", "Зафиксированы события...", "Ниже представлены..." и т.п. Сразу начинай с первой секции (`**🔥 В ФОКУСЕ**` или другой).
+
+🚦 ГЛАВНОЕ ОГРАНИЧЕНИЕ — ПОТОЛОК ВЫПУСКА: не более 5 пунктов ВСЕГО по всем секциям вместе и не более 2 пунктов в любой одной секции.
+• Это выпуск за сутки: материала на входе много, и почти всё из него — не must-know. Твоя работа — отбирать, а не перечислять.
+• «До 5», а не «ровно 5». Три сильных пункта лучше пяти с наполнителем. Если достойных два — публикуй два.
+• Пустых слотов не бывает: НЕ добирай пункты, чтобы заполнить секцию или дотянуть до пяти. Свободное место — это результат отбора, а не пробел.
+• Если кандидатов больше пяти — оставляй те, где выше всего сочетание: масштаб последствий × применимость к DevOps/SRE × наличие конкретного действия. Остальное молча выбрасывай, не упоминая, что что-то осталось за бортом.
+• Если по-настоящему значимого нет вообще — верни сигнал пустого выпуска (см. ниже). Тихий день — нормальный исход, лучше молчания только настоящая новость.
 
 **🔥 В ФОКУСЕ** (0-2 события — только если реально критично: outage, прорыв масштаба must-know; security попадает сюда только при активной эксплуатации с прямым infra/cloud/SRE impact)
 
-**⚙️ DEVOPS / SRE / CLOUD** (до 4 — Kubernetes, cloud updates, observability, CI/CD, IaC, outages, postmortems)
+**⚙️ DEVOPS / SRE / CLOUD** (0-2 — Kubernetes, cloud updates, observability, CI/CD, IaC, outages, postmortems)
 
-**🤖 AI / ML / LLM** (0–4 — только ПРИКЛАДНОЕ; критерии ниже в блоке «ФИЛЬТР AI/ML»)
+**🤖 AI / ML / LLM** (0-2 — только ПРИКЛАДНОЕ; критерии ниже в блоке «ФИЛЬТР AI/ML»)
 
 **🔐 SECURITY** (0-1 — только active exploitation, supply chain, cloud/container security с прямым операционным impact; обычные breaches/crime/geolocation/privacy stories пропускай)
 
-**🔬 SCIENCE / SPACE / R&D** (до 2 — физика, биотех, космос, значимые papers; СЮДА же — концептуально интересные «большие вопросы» про AI/CS: сознание и природа интеллекта, alignment-дебаты, глубокие научные/общественные следствия AI, И ЭМПИРИЧЕСКИЕ эксперименты про поведение AI/агентов — мультиагентные симуляции, эмерджентное и неожиданное поведение моделей, AI safety на длинных горизонтах, «что будет, если дать агентам свободу». Это любопытные исследовательские истории, бери их. НЕ сухие инкрементальные ML-статьи (новая архитектура/метод обучения/+X% на бенчмарке) — те по-прежнему мимо)
+**🔬 SCIENCE / SPACE / R&D** (0-2 — физика, биотех, космос, значимые papers; СЮДА же — концептуально интересные «большие вопросы» про AI/CS: сознание и природа интеллекта, alignment-дебаты, глубокие научные/общественные следствия AI, И ЭМПИРИЧЕСКИЕ эксперименты про поведение AI/агентов — мультиагентные симуляции, эмерджентное и неожиданное поведение моделей, AI safety на длинных горизонтах, «что будет, если дать агентам свободу». Это любопытные исследовательские истории, бери их. НЕ сухие инкрементальные ML-статьи (новая архитектура/метод обучения/+X% на бенчмарке) — те по-прежнему мимо)
 
 **🌍 POLITICS / SOCIETY** (0-1 — ТОЛЬКО если влияет на technology supply chains, санкции, доступность облаков)
 
@@ -232,6 +240,23 @@ NO_NEWS_MARKER = "значимых новостей не зафиксирова�
 # and prepended to the next run so a multi-hour LLM outage doesn't drop news.
 PENDING_INTEL_PATH = os.path.join(WORKSPACE, "memory", "pending_intel.txt")
 
+# Сколько часов накопленное сырьё считается годным. Сбор идёт ежечасно, а
+# публикация — раз в сутки, поэтому материал утреннего сбора ждёт следующего
+# выпуска почти ровно 24 часа: при пороге в 24 он выбрасывался бы прямо перед
+# отправкой. Берём запас; переопределяется через PENDING_MAX_AGE_H.
+try:
+    PENDING_MAX_AGE_H = float(os.environ.get("PENDING_MAX_AGE_H", "30"))
+except ValueError:
+    PENDING_MAX_AGE_H = 30.0
+
+# Потолок накопленного сырья. За сутки ежечасного сбора текст растёт линейно, а
+# в промпт он идёт целиком — без ограничения выпуск однажды упрётся в контекст
+# модели. При превышении режем СТАРОЕ начало, свежее ценнее.
+try:
+    PENDING_MAX_CHARS = int(os.environ.get("PENDING_MAX_CHARS", "400000"))
+except ValueError:
+    PENDING_MAX_CHARS = 400000
+
 
 def load_last_summary():
     try:
@@ -281,8 +306,8 @@ def load_pending_intel(path=None):
     ts_str = first_line[len("# PENDING SINCE: "):].strip()
     try:
         age_h = (datetime.now() - datetime.fromisoformat(ts_str)).total_seconds() / 3600
-        if age_h > 24:
-            print(f"load_pending_intel: data is {age_h:.1f}h old (>24h) — discarding")
+        if age_h > PENDING_MAX_AGE_H:
+            print(f"load_pending_intel: data is {age_h:.1f}h old (>{PENDING_MAX_AGE_H:g}h) — discarding")
             try:
                 os.unlink(path)
             except OSError:
@@ -294,10 +319,13 @@ def load_pending_intel(path=None):
 
 
 def save_pending_intel(intel_text, path=None):
-    """Persist intelligence data for the next run when the LLM fails.
+    """Persist intelligence data until the next digest run.
+
+    Копится в двух случаях: LLM не ответил, либо это ежечасный `--collect`,
+    который сознательно не публикует и оставляет материал дневному выпуску.
 
     If the file already exists, the original timestamp is preserved so the
-    24h expiry clock starts from the first failure, not the latest.
+    expiry clock starts from the first accumulation, not the latest.
     """
     path = path or PENDING_INTEL_PATH
     ts = None
@@ -310,12 +338,21 @@ def save_pending_intel(intel_text, path=None):
         pass
     if ts is None:
         ts = datetime.now().isoformat(timespec="minutes")
+    # Режем по границе строки, иначе обрубленный хвост записи попадёт в промпт
+    # как полноценный, но битый источник.
+    trimmed = False
+    if len(intel_text) > PENDING_MAX_CHARS:
+        cut = intel_text[-PENDING_MAX_CHARS:]
+        _, _, after_newline = cut.partition("\n")
+        intel_text = after_newline or cut
+        trimmed = True
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w", encoding="utf-8") as f:
             f.write(f"# PENDING SINCE: {ts}\n")
             f.write(intel_text)
-        print(f"save_pending_intel: saved {len(intel_text)} chars (since {ts})")
+        suffix = f", обрезано до лимита {PENDING_MAX_CHARS}" if trimmed else ""
+        print(f"save_pending_intel: saved {len(intel_text)} chars (since {ts}){suffix}")
     except OSError as e:
         print(f"save_pending_intel: write error {path}: {e}")
 
@@ -385,6 +422,11 @@ def format_event_signals(signals):
 
 def main():
     dry_run = "--dry-run" in sys.argv
+    # Сбор и публикация разведены: --collect гоняется ежечасно и только копит
+    # сырьё, дневной запуск без флага собирает последнюю порцию и публикует
+    # выпуск. Сбор обязан остаться частым — источники отдают ленту за короткое
+    # окно, раз в сутки половина новостей просто не попала бы в выдачу.
+    collect_only = "--collect" in sys.argv
     workspace = WORKSPACE
     os.makedirs(os.path.join(workspace, "memory"), exist_ok=True)
     core = None if dry_run else VibeCore()
@@ -511,6 +553,19 @@ def main():
     if pending:
         print("[PENDING] Prepending accumulated intel from previous failed LLM runs")
         all_intelligence_data = pending + "\n\n" + all_intelligence_data
+
+    # Ежечасный сбор: докладываем порцию в накопитель и выходим, не трогая ни
+    # LLM, ни канал. commit_seen обязателен — иначе следующий час соберёт те же
+    # URL заново и накопитель распухнет дублями ещё до дневного выпуска.
+    if collect_only:
+        if all_intelligence_data.strip():
+            save_pending_intel(all_intelligence_data)
+            if not dry_run:
+                collectors.commit_seen()
+        else:
+            print("[COLLECT] новых материалов нет — накопитель не тронут")
+        dedup.close()
+        return
 
     # 2. Summary
     if all_intelligence_data.strip():

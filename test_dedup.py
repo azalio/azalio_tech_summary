@@ -1098,15 +1098,52 @@ class TestPendingIntel:
         assert load_pending_intel(path=path) == ""
 
     def test_old_pending_is_discarded(self, tmp_path):
-        """Data older than 24h is stale and should be dropped."""
-        from main import save_pending_intel, load_pending_intel
+        """Данные старше порога устаревания выбрасываются."""
+        from main import load_pending_intel, PENDING_MAX_AGE_H
         path = str(tmp_path / "pending.txt")
-        # Write with a 25h-old timestamp
-        old_ts = (datetime.now() - timedelta(hours=25)).isoformat(timespec="minutes")
+        # Считаем от самой константы: порог развязан с суточным циклом
+        # публикации и переопределяется через PENDING_MAX_AGE_H.
+        old_ts = (datetime.now() - timedelta(hours=PENDING_MAX_AGE_H + 1)).isoformat(timespec="minutes")
         with open(path, "w") as f:
             f.write(f"# PENDING SINCE: {old_ts}\n")
             f.write("old news")
         assert load_pending_intel(path=path) == ""
+
+    def test_pending_survives_a_full_day(self, tmp_path):
+        """Материал утреннего сбора обязан дожить до выпуска через сутки.
+
+        Ради этого порог поднят выше 24ч: при ровно 24 первая порция дня
+        выбрасывалась бы прямо перед публикацией.
+        """
+        from main import load_pending_intel, PENDING_MAX_AGE_H
+        assert PENDING_MAX_AGE_H > 24, "суточный цикл требует запаса поверх 24ч"
+        path = str(tmp_path / "pending.txt")
+        ts = (datetime.now() - timedelta(hours=24)).isoformat(timespec="minutes")
+        with open(path, "w") as f:
+            f.write(f"# PENDING SINCE: {ts}\n")
+            f.write("news collected this morning")
+        assert "news collected this morning" in load_pending_intel(path=path)
+
+    def test_pending_is_trimmed_to_char_limit(self, tmp_path):
+        """Накопитель за сутки не растёт без предела — режется по лимиту."""
+        from main import save_pending_intel, load_pending_intel, PENDING_MAX_CHARS
+        path = str(tmp_path / "pending.txt")
+        oversized = "\n".join(f"[Source] item {i} " + "x" * 80 for i in range(PENDING_MAX_CHARS // 40))
+        assert len(oversized) > PENDING_MAX_CHARS
+        save_pending_intel(oversized, path=path)
+        loaded = load_pending_intel(path=path)
+        assert len(loaded) <= PENDING_MAX_CHARS
+        # Режется старое начало — свежий хвост обязан уцелеть
+        assert oversized[-200:] in loaded
+
+    def test_trim_keeps_lines_intact(self, tmp_path):
+        """Обрезка идёт по границе строки: битый огрызок записи в промпт не попадёт."""
+        from main import save_pending_intel, load_pending_intel, PENDING_MAX_CHARS
+        path = str(tmp_path / "pending.txt")
+        oversized = "\n".join(f"[Source] item {i}" for i in range(PENDING_MAX_CHARS))
+        save_pending_intel(oversized, path=path)
+        loaded = load_pending_intel(path=path)
+        assert loaded.startswith("[Source] item ")
 
     def test_fresh_pending_is_kept(self, tmp_path):
         from main import save_pending_intel, load_pending_intel
