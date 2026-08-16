@@ -22,6 +22,11 @@ TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 CHAT_ID = os.environ.get("TELEGRAM_REDDIT_CHAT_ID", "")
 if not TELEGRAM_TOKEN or not CHAT_ID:
     raise SystemExit("TELEGRAM_BOT_TOKEN and TELEGRAM_REDDIT_CHAT_ID env vars are required")
+
+# Прокси только для Bot API: подсети Telegram с этой VM напрямую недоступны.
+# Скачивание медиа с Reddit идёт мимо — незачем гонять картинки через туннель.
+TELEGRAM_PROXY = os.environ.get("TELEGRAM_PROXY", "").strip()
+TG_PROXIES = {"http": TELEGRAM_PROXY, "https": TELEGRAM_PROXY} if TELEGRAM_PROXY else None
 MIN_SCORE = 1000
 # Subreddits with image/video content. Comma-separated list in env var.
 # Empty list = media reposts disabled.
@@ -87,10 +92,12 @@ def get_reddit_client():
 def send_telegram(method, data, files=None):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/{method}"
     try:
-        r = requests.post(url, data=data, files=files, timeout=60)
+        r = requests.post(url, data=data, files=files, timeout=60, proxies=TG_PROXIES)
         return r.json()
     except Exception as e:
-        print(f"Telegram error: {e}")
+        # Токен — часть URL, а requests кладёт URL в текст исключения, поэтому
+        # без вычистки он утекает в reddit.log открытым текстом.
+        print(f"Telegram error: {str(e).replace(TELEGRAM_TOKEN, '<TOKEN>')}")
         return None
 
 def convert_gif_to_mp4(input_path, output_path):
