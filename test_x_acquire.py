@@ -366,6 +366,60 @@ def test_cascade_priority_order():
     assert seen == ["hi", "lo"]  # higher priority first
 
 
+# ── per-source since override ────────────────────────────────────────────────
+
+class SinceRecorder(FakeProvider):
+    """Provider that records the cutoff it was handed."""
+
+    def __init__(self, name, sink):
+        super().__init__(name, result=[])
+        self._sink = sink
+
+    def fetch(self, source, since_dt):
+        self._sink.append(since_dt)
+        return []
+
+
+def test_source_since_overrides_run_window():
+    """Аккаунт, пишущий раз в несколько дней, против 24ч окна отдаёт 0 items —
+    каскад читает это как «провайдер пуст» и валится в мёртвые скраперы."""
+    seen = []
+    s = Source(id="s1", kind="x_user", handle="a", since="7d")
+    run_since = BASE - timedelta(hours=24)
+    cascade_fetch([s], [SinceRecorder("rss", seen)], state=None,
+                  since_dt=run_since, now=BASE)
+    assert seen == [BASE - timedelta(days=7)]
+
+
+def test_source_without_since_uses_run_window():
+    seen = []
+    s = Source(id="s1", kind="x_user", handle="a")
+    run_since = BASE - timedelta(hours=24)
+    cascade_fetch([s], [SinceRecorder("rss", seen)], state=None,
+                  since_dt=run_since, now=BASE)
+    assert seen == [run_since]
+
+
+def test_bad_source_since_falls_back_to_run_window():
+    """Кривое значение в конфиге не должно ронять весь прогон."""
+    seen = []
+    s = Source(id="s1", kind="x_user", handle="a", since="позавчера")
+    run_since = BASE - timedelta(hours=24)
+    cascade_fetch([s], [SinceRecorder("rss", seen)], state=None,
+                  since_dt=run_since, now=BASE, logger=lambda *_: None)
+    assert seen == [run_since]
+
+
+def test_parse_sources_reads_since():
+    srcs = parse_sources({"sources": [
+        {"id": "a", "handle": "a", "since": "7d"},
+        {"id": "b", "handle": "b"},
+    ]})
+    by_id = {s.id: s for s in srcs}
+    assert by_id["a"].since == "7d"
+    assert by_id["b"].since == ""
+
+
 # ── circuit breaker (XState) ─────────────────────────────────────────────────
 
 def test_breaker_opens_after_threshold_and_resets(tmp_path):

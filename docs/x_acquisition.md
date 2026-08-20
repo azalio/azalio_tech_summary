@@ -61,10 +61,22 @@ sources:
     handle: NewsfromScience     # X handle, no @
     priority: 9                 # higher = fetched & ranked first
     bluesky: science.org        # explicit bsky handle/DID — x→bsky is NOT 1:1
+    since: 7d                   # optional: per-source lookback, see below
     mirrors:
       - kind: rss
         url: https://www.science.org/rss/news_current.xml
 ```
+
+**`since` — for accounts that post every few days.** The run-wide window
+(`X_SINCE`, default `24h`) is applied to every provider, so an account whose
+newest post is 6 days old makes its provider return 0 items *correctly*. The
+cascade can't tell "nothing new" from "provider broken": it falls through to the
+scrapers below, and when those are down the source is logged
+`DEGRADED — no provider yielded items` even though RSSHub answered `200` with a
+healthy feed. Set `since` above the account's real cadence (`7d`, `14d`) and it
+resolves on the first working provider. Widening is safe — `seen_items` still
+blocks anything already sent, so a longer window can't republish old posts.
+A malformed value warns and falls back to the run-wide window.
 
 No-YAML fallback for a quick test: `export X_HANDLES=OpenAI,garrytan` (handles
 only, no mirrors → they degrade unless an X-native provider is configured).

@@ -260,6 +260,13 @@ class Source:
     bluesky: str = ""
     bluesky_list: str = ""
     max_items: int = 0  # 0 -> use the cascade default cap
+    # Per-source lookback override ("7d", "12h"; "" -> the run-wide --since).
+    # Needed for accounts that post every few days: against the default 24h
+    # window their provider legitimately returns 0 items, the cascade reads that
+    # as "provider yielded nothing" and falls through to dead scrapers, so a
+    # perfectly healthy source is reported DEGRADED. seen_items still guarantees
+    # a widened window can't republish anything already sent.
+    since: str = ""
 
 
 def _coerce_mirrors(raw):
@@ -296,6 +303,7 @@ def parse_sources(data):
             bluesky=str(r.get("bluesky", "")).lstrip("@"),
             bluesky_list=str(r.get("bluesky_list", "")),
             max_items=int(r.get("max_items", 0) or 0),
+            since=str(r.get("since", "") or ""),
         ))
     return sources
 
@@ -1016,6 +1024,24 @@ def _parse_iso(s):
 
 # ── Cascade ──────────────────────────────────────────────────────────────────
 
+def _source_since_dt(source, run_since_dt, now, logger=print):
+    """Effective lookback cutoff for one source.
+
+    ``source.since`` ("7d") overrides the run-wide ``--since`` so a low-volume
+    account isn't judged against a window shorter than its posting cadence. A
+    malformed value must not kill the run — we warn and fall back to the
+    run-wide cutoff.
+    """
+    if not source.since:
+        return run_since_dt
+    try:
+        delta = parse_since(source.since)
+    except ValueError as e:
+        logger(f"  [x] {source.id}: bad since {source.since!r} ({e}) — using run default")
+        return run_since_dt
+    return now - delta if delta else None
+
+
 def cascade_fetch(sources, providers, state=None, *, since_dt=None,
                   per_source_cap=10, now=None, logger=print):
     """Walk the provider cascade per source, first-success wins.
@@ -1032,6 +1058,7 @@ def cascade_fetch(sources, providers, state=None, *, since_dt=None,
     items, errors = [], 0
     for source in sorted(sources, key=lambda s: (-s.priority, s.id)):
         cap = source.max_items or per_source_cap
+        src_since = _source_since_dt(source, since_dt, now, logger)
         used = None
         for provider in providers:
             if not provider.supports(source):
@@ -1040,7 +1067,7 @@ def cascade_fetch(sources, providers, state=None, *, since_dt=None,
                 logger(f"  [x] skip {provider.name}/{source.id}: breaker open")
                 continue
             try:
-                got = provider.fetch(source, since_dt)
+                got = provider.fetch(source, src_since)
             except ProviderUnavailable as e:
                 logger(f"  [x] {provider.name}/{source.id}: unavailable ({redact(e)})")
                 continue

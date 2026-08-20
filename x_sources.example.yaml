@@ -19,17 +19,27 @@
 #   bluesky_list  at:// list URI for a Bluesky list feed
 #   mirrors   list of {kind, url} feeds tried before any X path
 #   max_items per-source cap (0 = pipeline default)
+#   since     per-source lookback ("7d", "12h"); empty = the run-wide X_SINCE.
+#             Set it for accounts that post every few days: against the default
+#             24h window their provider honestly returns 0 items, the cascade
+#             reads that as "provider yielded nothing" and falls through to the
+#             dead scrapers below, so a healthy source is reported DEGRADED.
+#             Widening is safe — seen_items still blocks anything already sent.
 
 sources:
-  # Anthropic is effectively X-only here: it has no public RSS feed and its
-  # Bluesky handle (anthropic.com) is a parked, empty account. So this source
-  # DEGRADES (yields nothing) until you enable an X-native provider — self-hosted
-  # RSSHub (X_RSSHUB_URL) or a Nitter instance (X_NITTER_INSTANCES) in .env. It's
-  # here on purpose to show the honest fallback case: no free non-X mirror exists.
+  # Anthropic is effectively X-only here: it has no public RSS feed (every
+  # /rss.xml, /feed.xml, /news/rss.xml variant 404s as of 2026-08) and its
+  # Bluesky handle (anthropic.com) is a parked, empty account. So it needs an
+  # X-native provider — self-hosted RSSHub (X_RSSHUB_URL) or Nitter
+  # (X_NITTER_INSTANCES) in .env — and it's here on purpose as the honest
+  # fallback case: no free non-X mirror exists.
+  # It also posts only every few days, so `since` must exceed that cadence or
+  # RSSHub returns 0 items on a 24h window and the source reads as DEGRADED.
   - id: anthropic_x
     kind: x_user
     handle: AnthropicAI
     priority: 10
+    since: 7d
     # bluesky: anthropic.com   # ← parked/empty as of 2026-06; left off deliberately
 
   # Science magazine's news desk. The science.org news RSS is the authoritative
