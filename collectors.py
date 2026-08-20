@@ -67,7 +67,6 @@ class Collectors:
         # API keys (optional, from env)
         self.finnhub_key = os.environ.get("FINNHUB_API_KEY", "")
         self.newsapi_key = os.environ.get("NEWSAPI_KEY", "")
-        self.nvd_key = os.environ.get("NVD_API_KEY", "")
 
         self._init_db()
         self._cleanup_seen()
@@ -1325,14 +1324,13 @@ class Collectors:
         return content if count > 0 else ""
 
     def collect_newsapi(self):
-        """NewsAPI: AI, DevOps, Cybersecurity news."""
+        """NewsAPI: AI, DevOps news."""
         if not self.newsapi_key:
             return ""
         print("Fetching NewsAPI...")
         queries = {
             "AI": '"artificial intelligence" OR "large language model" OR "generative AI"',
             "DevOps": 'kubernetes OR terraform OR "cloud native"',
-            "Security": 'cybersecurity OR "data breach" OR "zero-day"',
         }
         skip_domains = {"pypi.org", "cgpersia.com", "substack.com"}
         content = "NEWSAPI:\n"
@@ -1380,7 +1378,7 @@ class Collectors:
 
     def collect_infra_news(self):
         """Kubernetes, CNCF, AWS, GCP, Azure, Cloudflare, HashiCorp, Datadog,
-        Grafana, Last Week in AWS, CISA — DevOps/SRE/cloud. The New Stack +
+        Grafana, Last Week in AWS — DevOps/SRE/cloud. The New Stack +
         Elastic + AWS DevOps cover the AI-agents-in-infra angle. GitHub Blog
         catches platform changes (Copilot/Actions/GHAS) and Netflix Tech Blog
         feeds in distributed-systems / observability deep-dives."""
@@ -1401,116 +1399,11 @@ class Collectors:
             "Elastic": "https://www.elastic.co/blog/feed",
             "GitHub Blog": "https://github.blog/feed/",
             "Netflix Tech": "https://netflixtechblog.com/feed",
-            "CISA Alerts": "https://www.cisa.gov/cybersecurity-advisories/all.xml",
             "SRE Weekly": "https://sreweekly.com/feed/",
             "Brendan Gregg": "https://www.brendangregg.com/blog/rss.xml",
             "Julia Evans": "https://jvns.ca/atom.xml",
         }
         return self._fetch_rss(feeds, "INFRA / DEVOPS / SRE", max_per_feed=2, max_total=32)
-
-    def collect_security_news(self):
-        """Krebs, The Hacker News, BleepingComputer, Project Zero, Help Net Security
-        — CVE/breaches/exploits."""
-        print("Fetching Security RSS...")
-        feeds = {
-            "KrebsOnSecurity": "https://krebsonsecurity.com/feed/",
-            "The Hacker News": "https://feeds.feedburner.com/TheHackersNews",
-            "BleepingComputer": "https://www.bleepingcomputer.com/feed/",
-            "Project Zero": "https://googleprojectzero.blogspot.com/feeds/posts/default",
-            "Help Net Security": "https://www.helpnetsecurity.com/feed/",
-        }
-        return self._fetch_rss(feeds, "SECURITY", max_per_feed=3, max_total=18)
-
-    def collect_nvd_cves(self, hours_back=24, min_score=7.0, max_results=15):
-        """NVD CVE feed via JSON API 2.0. Returns CVEs published in the last
-        `hours_back` hours with CVSS baseScore >= min_score (HIGH/CRITICAL).
-        NVD_API_KEY env raises the rate limit from 5 to 50 req/30s."""
-        print("Fetching NVD CVEs...")
-        from datetime import datetime, timedelta, timezone
-        now = datetime.now(timezone.utc)
-        start = now - timedelta(hours=hours_back)
-        # NVD wants ISO 8601 without timezone suffix; millisecond precision.
-        fmt = "%Y-%m-%dT%H:%M:%S.000"
-        params = {
-            "pubStartDate": start.strftime(fmt),
-            "pubEndDate": now.strftime(fmt),
-            "resultsPerPage": 2000,
-        }
-        headers = {"User-Agent": "azalio-tech-summary/1.0"}
-        if self.nvd_key:
-            headers["apiKey"] = self.nvd_key
-        try:
-            resp = requests.get(
-                "https://services.nvd.nist.gov/rest/json/cves/2.0",
-                params=params,
-                headers=headers,
-                timeout=30,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-        except Exception as e:
-            print(f"  NVD error: {e}")
-            return ""
-
-        items = []
-        for v in data.get("vulnerabilities", []):
-            cve = v.get("cve", {})
-            cve_id = cve.get("id", "")
-            if not cve_id:
-                continue
-            # Description: first English entry.
-            desc = ""
-            for d in cve.get("descriptions", []):
-                if d.get("lang") == "en":
-                    desc = (d.get("value") or "").strip()
-                    break
-            # CVSS: prefer v4.0 → v3.1 → v3.0 → v2 (most recent metric standard wins).
-            score = 0.0
-            severity = ""
-            metrics = cve.get("metrics", {})
-            for key in ("cvssMetricV40", "cvssMetricV31", "cvssMetricV30", "cvssMetricV2"):
-                entries = metrics.get(key) or []
-                if not entries:
-                    continue
-                cvss = entries[0].get("cvssData", {})
-                score = cvss.get("baseScore", 0.0)
-                # v2 puts severity at the entry level; v3+ inside cvssData.
-                severity = cvss.get("baseSeverity") or entries[0].get("baseSeverity", "")
-                break
-            if score < min_score:
-                continue
-            url = f"https://nvd.nist.gov/vuln/detail/{cve_id}"
-            items.append({
-                "id": cve_id,
-                "score": score,
-                "severity": severity,
-                "desc": desc,
-                "url": url,
-            })
-
-        # Sort by severity descending so the LLM sees the worst ones first.
-        items.sort(key=lambda x: x["score"], reverse=True)
-
-        content = f"NVD CVEs (last {hours_back}h, CVSS>={min_score}):\n"
-        count = 0
-        for it in items:
-            if count >= max_results:
-                break
-            if self._is_seen(it["url"]):
-                continue
-            self._mark_seen(it["url"], "NVD")
-            title = f"{it['id']} (CVSS {it['score']} {it['severity']})"
-            if self._is_semantic_dup(title, "NVD", it["url"], it["desc"]):
-                continue
-            short_desc = it["desc"][:400].strip()
-            content += f"- [{it['id']}] CVSS {it['score']} {it['severity']} — {short_desc} - Link: {it['url']}\n"
-            self._add_candidate(
-                "NVD", it["id"], f"{it['id']} {short_desc[:80]}", it["url"],
-                line=f"- [{it['id']}] CVSS {it['score']} {it['severity']} — {short_desc} - Link: {it['url']}",
-                cvss=float(it["score"]), freshness=0.9,
-            )
-            count += 1
-        return content if count > 0 else ""
 
     def collect_ai_labs(self):
         """Official lab blogs (OpenAI, DeepMind, Meta, Google Research) and

@@ -7,9 +7,9 @@ final posted ``summary``. This script turns that append-only log into metrics so
 you can answer, over history rather than by eyeballing one run:
 
   * Is the applied-vs-fundamental AI/ML filter behaving? (How many ArXiv/HF paper
-    candidates were offered vs how many survived into the 🤖 AI/ML section, and
+    candidates were offered vs how many survived into the posted digest, and
     *which* papers were kept — so you can spot pure-theory leaks.)
-  * How thin are digests? (no-news rate, item counts, sections present.)
+  * How thin are digests? (no-news rate, item counts.)
 
 Pure parsing — no network, no E5, no DB — so the parsing functions are unit
 tested locally; the CLI runs on the server against the live JSONL.
@@ -35,11 +35,6 @@ from typing import Iterable
 _PAPER_URL_RE = re.compile(r"(https?://[^\s]*(?:arxiv\.org|huggingface\.co/papers)[^\s]*)")
 _ARXIV_ID_RE = re.compile(r"arxiv\.org/(?:abs|pdf|rss)?/?([0-9]{4}\.[0-9]{4,5})", re.IGNORECASE)
 _HF_ID_RE = re.compile(r"huggingface\.co/papers/([^\s/?#]+)")
-
-# AI/ML section header in the posted digest (matches the VIBE_PROMPT structure).
-_AIML_HEADER_RE = re.compile(r"\*\*.*AI\s*/\s*ML.*\*\*", re.IGNORECASE)
-# Any section header (bold line) — used to slice the AI/ML section out.
-_SECTION_HEADER_RE = re.compile(r"^\s*\*\*.+\*\*\s*$")
 
 _NO_NEWS_RE = re.compile(r"значимых новостей не зафиксировано", re.IGNORECASE)
 
@@ -77,27 +72,6 @@ def extract_paper_candidates(intelligence: str) -> dict:
         title = title.strip(" -\t")
         out.setdefault(key, title[:160])
     return out
-
-
-def extract_aiml_section(summary: str) -> str:
-    """Return just the 🤖 AI/ML section body of a posted digest, or "".
-
-    Slices from the AI/ML header to the next section header (or end).
-    """
-    lines = (summary or "").splitlines()
-    start = None
-    for i, line in enumerate(lines):
-        if _AIML_HEADER_RE.search(line):
-            start = i + 1
-            break
-    if start is None:
-        return ""
-    body = []
-    for line in lines[start:]:
-        if _SECTION_HEADER_RE.match(line):
-            break
-        body.append(line)
-    return "\n".join(body).strip()
 
 
 def papers_kept_in_summary(summary: str, candidates: dict) -> set:
@@ -138,7 +112,6 @@ def analyze_run(record: dict) -> dict:
         "kept_titles": [candidates[k] for k in kept],
         "items": count_items(summary),
         "no_news": no_news,
-        "has_aiml_section": bool(extract_aiml_section(summary)),
     }
 
 
@@ -165,7 +138,6 @@ def aggregate(runs: list) -> dict:
         "runs": n,
         "no_news_runs": sum(1 for r in runs if r["no_news"]),
         "avg_items": round(sum(r["items"] for r in runs) / n, 1),
-        "aiml_section_rate": round(sum(1 for r in runs if r["has_aiml_section"]) / n, 2),
         "paper_candidates_total": total_cand,
         "papers_kept_total": total_kept,
         "paper_keep_rate": round(total_kept / total_cand, 3) if total_cand else 0.0,
@@ -216,7 +188,6 @@ def main(argv=None) -> int:
     print(f"Проанализировано прогонов: {report['runs']}")
     print(f"  Пустых (no-news): {report['no_news_runs']}")
     print(f"  Среднее число пунктов: {report['avg_items']}")
-    print(f"  Доля прогонов с секцией AI/ML: {report['aiml_section_rate']}")
     print(f"  Кандидатов-статей (ArXiv/HF): {report['paper_candidates_total']}")
     print(f"  Из них оставлено в дайджесте: {report['papers_kept_total']} "
           f"(keep rate {report['paper_keep_rate']})")

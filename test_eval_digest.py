@@ -12,10 +12,7 @@ HACKER NEWS (front page):
 - Some infra story (300 pts) - Link: https://news.ycombinator.com/item?id=1
 """
 
-SUMMARY_KEEPS_ONE = """**🤖 AI / ML / LLM**
-• DFlash ускоряет инференс LLM. [ArXiv](http://arxiv.org/abs/2606.01234)
-
-**⚙️ DEVOPS / SRE / CLOUD**
+SUMMARY_KEEPS_ONE = """• 🆕 DFlash ускоряет инференс LLM. [ArXiv](http://arxiv.org/abs/2606.01234)
 • Что-то про Kubernetes. [HN](https://news.ycombinator.com/item?id=1)
 """
 
@@ -40,12 +37,6 @@ def test_papers_kept_matches_by_url():
     assert kept == {"arxiv:2606.01234"}
 
 
-def test_extract_aiml_section():
-    body = ed.extract_aiml_section(SUMMARY_KEEPS_ONE)
-    assert "DFlash" in body
-    assert "Kubernetes" not in body  # stops at next section header
-
-
 def test_count_items():
     assert ed.count_items(SUMMARY_KEEPS_ONE) == 2
     assert ed.count_items(SUMMARY_NO_NEWS) == 0
@@ -58,7 +49,6 @@ def test_analyze_run():
     assert r["papers_kept"] == 1
     assert r["items"] == 2
     assert r["no_news"] is False
-    assert r["has_aiml_section"] is True
 
 
 def test_analyze_no_news_run():

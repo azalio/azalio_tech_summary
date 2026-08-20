@@ -23,11 +23,11 @@ Output goes to ~30 buckets per day, ~5-15 bullets per digest after dedup.
 - **HackerNews** — front page via Algolia.
 - **Tech press (RSS)** — TechCrunch, Ars Technica, The Verge, Wired, MIT Tech Review, IEEE Spectrum, The Register.
 - **AI research** — HuggingFace Daily Papers (upvotes ≥ 100), ArXiv RSS (cs.AI, cs.LG, cs.CL).
-- **Infra/DevOps** — Kubernetes, CNCF, AWS, Cloudflare, CISA Alerts.
+- **Infra/DevOps** — Kubernetes, CNCF, AWS, Cloudflare, HashiCorp, Datadog, Grafana.
 - **Science/Space** — NASA, Nature, ScienceDaily, SpaceNews, ESO, ESA, Chandra X-ray, Phys.org.
 - **Global news** — BBC, Al Jazeera, DW.
 - **Google News** — search-based RSS.
-- **NewsAPI** — AI / DevOps / Cybersecurity categories (optional, needs API key).
+- **NewsAPI** — AI / DevOps categories (optional, needs API key).
 - **Finnhub** — general financial news (optional, needs API key).
 - **Habr** — top daily articles (score ≥ 100).
 - **Claude Platform release notes** — direct `.md` fetch from `platform.claude.com`.
@@ -134,9 +134,13 @@ make install-cron
 This writes two managed entries to the deploy user's crontab (bracketed by `# BEGIN/# END azalio-tech-summary` markers so re-running is idempotent):
 
 ```cron
-15 * * * * cd $REMOTE_DIR && .venv/bin/python main.py                       >> $REMOTE_DIR/main.log   2>&1
-25 * * * * cd $REMOTE_DIR && .venv/bin/python standalone_reddit_digest.py   >> $REMOTE_DIR/reddit.log 2>&1
+15 * * * * flock -n .cron-main.lock   -c '… main.py'                      >> $REMOTE_DIR/main.log   2>&1
+25 * * * * flock -n .cron-reddit.lock -c '… standalone_reddit_digest.py'  >> $REMOTE_DIR/reddit.log 2>&1
 ```
+
+The hourly run collects and publishes in one pass. A quiet hour ends with the editor returning the no-news sentinel, and `main.py` skips the Telegram post entirely — silence is the expected outcome for most hours.
+
+To switch back to rare issues instead: run the hourly line with `--collect` (accumulates into `pending_intel.txt` without publishing) and add flagless lines for the publishing hours. Cron hours are **UTC** (the VM's system TZ); MSK = UTC+3 year-round. Change the schedule in `deploy/install-cron.sh`, not by hand-editing the crontab — `make install-cron` rewrites the managed block.
 
 Cron has a minimal `$PATH`, so the LLM CLI may not be found by name. Pin it via `GEMINI_BIN` (or `CODEX_BIN`) inside `.env`, or prepend the directory to the cron line's `PATH`.
 

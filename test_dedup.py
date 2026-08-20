@@ -827,12 +827,55 @@ class TestRussianStylePrompt:
         from main import VIBE_PROMPT
 
         assert "РУССКИЙ ТЕХНИЧЕСКИЙ СТИЛЬ" in VIBE_PROMPT
-        assert "необоснованные английские словосочетания" in VIBE_PROMPT
-        assert "clean-room open implementation" in VIBE_PROMPT
-        assert "независимая открытая реализация" in VIBE_PROMPT
+        assert "Переводи английские словосочетания" in VIBE_PROMPT
         assert "agent workloads" in VIBE_PROMPT
         assert "нагрузки AI-агентов" in VIBE_PROMPT
-        assert "оставляй в оригинале только" in VIBE_PROMPT
+        assert "failure mode analysis" in VIBE_PROMPT
+        assert "анализ режимов отказа" in VIBE_PROMPT
+        assert "В оригинале оставляй ТОЛЬКО" in VIBE_PROMPT
+        # Нелатинский текст никогда не остаётся в оригинале.
+        assert "НЕЛАТИНСКИЙ ТЕКСТ" in VIBE_PROMPT
+
+
+class TestRadarPrompt:
+    """Гарды на ворота радара: их молчаливая потеря = выпуск снова становится
+    лентой-пересказом, и это не видно ни по тестам, ни по логам."""
+
+    def test_prompt_has_both_gates(self):
+        from main import VIBE_PROMPT
+
+        assert "ПРОПУСКНЫЕ ВОРОТА" in VIBE_PROMPT
+        assert "ЗАПРЕТНЫЕ ВОРОТА" in VIBE_PROMPT
+        # Потолок и порядок: не более 5, сильнейшее первым.
+        assert "ПОТОЛОК ВЫПУСКА: не более 5 пунктов" in VIBE_PROMPT
+        assert "Сильнейшее первым" in VIBE_PROMPT
+
+    def test_prompt_excludes_security(self):
+        from main import VIBE_PROMPT
+
+        assert "ВСЯ БЕЗОПАСНОСТЬ" in VIBE_PROMPT
+        for term in ("CVE", "эксплойты", "breaches", "security-advisories"):
+            assert term in VIBE_PROMPT, term
+
+    def test_prompt_no_news_sentinel_matches_main(self):
+        """Строка-пустышка в промпте обязана совпадать с маркером, по которому
+        main.py гасит постинг, иначе тихий час уедет в канал как текст."""
+        from main import VIBE_PROMPT, NO_NEWS_MARKER
+
+        assert NO_NEWS_MARKER in VIBE_PROMPT
+        assert "За последний час значимых новостей не зафиксировано." in VIBE_PROMPT
+
+    def test_prompt_treats_source_data_as_untrusted(self):
+        from main import VIBE_PROMPT
+
+        assert "НЕДОВЕРЕННЫЕ ИСХОДНЫЕ ДАННЫЕ" in VIBE_PROMPT
+
+    def test_prompt_keeps_placeholders(self):
+        from main import VIBE_PROMPT
+
+        for ph in ("{last_summary}", "{event_signals}",
+                   "{priority_index}", "{all_intelligence_data}"):
+            assert ph in VIBE_PROMPT, ph
 
 
 class TestCisaScenario:

@@ -14,8 +14,12 @@ source .env.deploy   # exports SSH_TARGET (e.g. user@ip) and REMOTE_DIR
 ssh "$SSH_TARGET" "cd $REMOTE_DIR && <cmd>"
 ```
 
-- Cron: `main.py` at `:15`, `standalone_reddit_digest.py` at `:25` (append to
-  `main.log` / `reddit.log` in `REMOTE_DIR`).
+- Cron (server TZ is **UTC**; MSK = UTC+3 year-round): `main.py` at `:15`
+  (hourly — collects *and* publishes), `standalone_reddit_digest.py` at `:25`
+  (append to `main.log` / `reddit.log` in `REMOTE_DIR`). Both are `flock`-guarded;
+  source of truth is `deploy/install-cron.sh`, not a hand-edited crontab.
+  `main.py --collect` accumulates without publishing — unused by the hourly
+  schedule, kept for switching back to rare issues.
 - Python venv with all deps lives at `$REMOTE_DIR/.venv`. The system python has
   **no numpy/sentence-transformers** — anything importing `dedup` must use
   `.venv/bin/python`. Set `HF_HUB_OFFLINE=1` (the E5 model is cached) to skip HF
@@ -75,7 +79,7 @@ cross-language) still goes through E5 exactly as before. Tunable/disable via
 
 - **Engagement ranking** (`ranking.py`): every collector registers a structured
   `Candidate` (with source-native engagement — HN pts / Reddit score / Habr+HF
-  upvotes / GitHub stars-day / Telegram views / CVSS). `main.py` fuses them
+  upvotes / GitHub stars-day / Telegram views). `main.py` fuses them
   (log-normalized engagement + weighted RRF across sources, per-source cap 4 /
   per-author cap 3) into a **priority index** injected into the prompt as a
   `ranking_signal_only` hint — like `event_signals`. The full candidate blob is
