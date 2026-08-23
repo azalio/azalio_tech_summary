@@ -919,6 +919,70 @@ def _bare_core():
     return c
 
 
+class TestReasoningSuppression:
+    """LLM reasoning must never cross the ask_llm trust boundary."""
+
+    def test_ask_llm_returns_only_final_after_think_blocks(self, monkeypatch):
+        c = _bare_core()
+        monkeypatch.setattr(core_mod, "OLLAMA_API_KEY", "test-key")
+        c._run_ollama = lambda prompt, timeout: (
+            "<think>First draft.</think>\n"
+            "<think>Reconsidering the source.</think>\n\n"
+            "• Final digest item. [Source](https://example.com)"
+        )
+
+        result = c.ask_llm("prompt")
+
+        assert result == "• Final digest item. [Source](https://example.com)"
+
+    def test_ask_llm_rejects_unclosed_reasoning_only_output(self, monkeypatch):
+        c = _bare_core()
+        monkeypatch.setattr(core_mod, "OLLAMA_API_KEY", "test-key")
+        monkeypatch.setattr(core_mod.shutil, "which", lambda *args, **kwargs: None)
+        c._run_ollama = lambda prompt, timeout: "<think>Still composing the answer"
+
+        assert c.ask_llm("prompt") is None
+
+    @pytest.mark.parametrize(
+        ("output", "expected"),
+        [
+            (
+                "&lt;analysis&gt;Draft&lt;/analysis&gt;\n• Final item",
+                "• Final item",
+            ),
+            (
+                "Truncated hidden prefix</reasoning>\n• Final item",
+                "• Final item",
+            ),
+            (
+                '{"response": "<think>Draft</think>\\n• Final item"}',
+                "• Final item",
+            ),
+            (
+                '{"response": "<think>Unfinished reasoning"}',
+                "",
+            ),
+        ],
+    )
+    def test_clean_llm_output_handles_transport_variants(self, output, expected):
+        assert core_mod._clean_llm_output(output) == expected
+
+    def test_reasoning_only_ollama_falls_back_to_codex(self, monkeypatch):
+        c = _bare_core()
+        monkeypatch.setattr(core_mod, "OLLAMA_API_KEY", "test-key")
+        monkeypatch.delenv("CODEX_BIN", raising=False)
+        monkeypatch.delenv("GEMINI_BIN", raising=False)
+        monkeypatch.setattr(
+            core_mod.shutil,
+            "which",
+            lambda cli, path=None: "/usr/bin/codex" if cli == "codex" else None,
+        )
+        c._run_ollama = lambda prompt, timeout: "<think>No final yet"
+        c._run_codex = lambda resolved, prompt, env, timeout: "• Fallback final"
+
+        assert c.ask_llm("prompt") == "• Fallback final"
+
+
 class TestSplitOversizedSection:
     def test_short_section_returned_as_is(self):
         c = _bare_core()

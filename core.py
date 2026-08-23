@@ -31,6 +31,67 @@ OLLAMA_API_KEY = os.environ.get("OLLAMA_API_KEY", "").strip()
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "minimax-m3")
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "https://ollama.com/v1/chat/completions")
 
+
+_REASONING_TAG_RE = re.compile(
+    r"<\s*(/?)\s*(think|analysis|reasoning|thought)\b[^>]*>"
+    r"|&lt;\s*(/?)\s*(think|analysis|reasoning|thought)\b.*?&gt;",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _clean_llm_output(output):
+    """Return only the publishable final answer from an LLM response.
+
+    Some reasoning models include hidden chain-of-thought in XML-like tags.
+    Treat those spans as untrusted transport metadata: remove complete spans,
+    discard an unterminated span through EOF, and discard everything before an
+    orphan closing tag. The latter two cases intentionally fail closed rather
+    than risking a partial thought leaking into Telegram.
+    """
+    if not output or not str(output).strip():
+        return ""
+
+    text = str(output).strip()
+
+    # Gemini CLI can wrap its answer in {"response": "..."}. Unwrap before
+    # filtering so an unterminated reasoning block cannot leave a malformed,
+    # non-empty JSON prefix that would later be posted verbatim.
+    try:
+        envelope = json.loads(text)
+    except (TypeError, ValueError):
+        envelope = None
+    if isinstance(envelope, dict):
+        for key in ("response", "text"):
+            value = envelope.get(key)
+            if isinstance(value, str):
+                text = value.strip()
+                break
+
+    clean_parts = []
+    cursor = 0
+    depth = 0
+    for match in _REASONING_TAG_RE.finditer(text):
+        closing = (match.group(1) or match.group(3)) == "/"
+        if closing:
+            if depth == 0:
+                # A missing opening tag means the prefix may itself be hidden
+                # reasoning. Keep only content after the orphan close.
+                clean_parts.clear()
+            else:
+                depth -= 1
+            cursor = match.end()
+            continue
+
+        if depth == 0:
+            clean_parts.append(text[cursor:match.start()])
+        depth += 1
+        cursor = match.end()
+
+    if depth == 0:
+        clean_parts.append(text[cursor:])
+    return "".join(clean_parts).strip()
+
+
 class VibeCore:
     def __init__(self):
         self.tg_token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
@@ -280,7 +341,7 @@ class VibeCore:
         return data["choices"][0]["message"]["content"]
 
     def ask_llm(self, prompt):
-        """Run an LLM CLI (gemini/codex) in cron-safe mode.
+        """Run Ollama/LLM CLI providers in cron-safe mode.
 
         Cron runs with a minimal PATH, so we try absolute paths first.
         Codex prints a decorated transcript to stdout, so we redirect its
@@ -298,8 +359,11 @@ class VibeCore:
             except Exception as e:
                 print(f"ollama failed: {e}")
             else:
+                clean = _clean_llm_output(out)
+                if clean:
+                    return clean
                 if out and out.strip():
-                    return out.strip()
+                    print("ollama returned reasoning without a final answer; trying fallback")
 
         # Extend PATH for subprocesses (cron runs with a minimal PATH)
         extra_paths = [
@@ -338,8 +402,11 @@ class VibeCore:
                 except Exception as e:
                     print(f"{name} failed: {e}")
                     continue
+                clean = _clean_llm_output(out)
+                if clean:
+                    return clean
                 if out and out.strip():
-                    return out.strip()
+                    print(f"{name} returned reasoning without a final answer; trying fallback")
 
         return None
 

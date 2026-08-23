@@ -196,8 +196,11 @@ the previous digest text.
 7. `main.py` inserts the previous digest and new source data into `VIBE_PROMPT`.
 8. `main.py` formats current-run event signals and includes them in the prompt
    as ranking-only context. In dry-run mode, the prompt is printed. Otherwise
-   `VibeCore.ask_llm` calls Codex first and then Gemini if Codex is unavailable
-   or fails. The fallback
+   `VibeCore.ask_llm` calls Ollama Cloud when configured, then Codex and Gemini
+   as fallbacks. Before returning, it removes tagged model reasoning and treats a
+   reasoning-only or unterminated reasoning response as empty, so the next
+   provider is tried and hidden analysis cannot reach the audit log, previous
+   summary, or Telegram. The fallback
    path is CLI-specific: Gemini reads stdin/stdout directly, while Codex writes
    its final answer to a temporary output file.
 9. `VibeCore.send_tg` formats the digest, posts it to Telegram, splits it by
