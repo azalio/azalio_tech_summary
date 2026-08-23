@@ -10,7 +10,7 @@ Every hour the bot:
 
 1. **Collects** ~150-300 headlines in parallel from RSS, REST APIs, and HTML pages.
 2. **Deduplicates** them in two layers — exact URL match (SQLite, 30-day TTL) and semantic clustering on multilingual sentence embeddings (`intfloat/multilingual-e5-small`).
-3. **Summarises** what's left with an LLM, trying Codex CLI → Antigravity CLI (`agy`) → Ollama Cloud, under a strict editorial prompt: DevOps/SRE → AI/ML → Security → Science → Politics, no preamble, no editorial commentary.
+3. **Summarises** what's left with an LLM, trying Codex CLI → Ollama Cloud, under a strict editorial prompt: DevOps/SRE → AI/ML → Security → Science → Politics, no preamble, no editorial commentary.
 4. **Posts** the digest to a Telegram channel, splitting by section if it overflows the 4096-char limit.
 
 Output goes to ~30 buckets per day, ~5-15 bullets per digest after dedup.
@@ -38,7 +38,7 @@ Output goes to ~30 buckets per day, ~5-15 bullets per digest after dedup.
 ```
 collectors.py ──► dedup.py ──► main.py (LLM call) ──► core.py (Telegram)
    RSS/API           E5 model      VIBE_PROMPT          HTML format
-   ~15 sources       SQLite        codex→agy→ollama     auto-split
+   ~15 sources       SQLite        codex→ollama         auto-split
 ```
 
 State lives in `${VIBE_WORKSPACE}/memory/`:
@@ -65,9 +65,8 @@ Cluster centroids are **frozen** to the first item's embedding — averaging acr
 - **Python 3.10+** with `python3-venv`
 - **An LLM provider** — at least one of:
   - [Codex CLI](https://github.com/openai/codex) — `brew install --cask codex`. Authenticate via `codex login`. Auth lives in `~/.codex/auth.json`.
-  - [Antigravity CLI](https://antigravity.google/) — install `agy` and authenticate once interactively.
   - [Ollama Cloud](https://ollama.com/) — set `OLLAMA_API_KEY`.
-  - When several are configured, the fixed order is Codex → Antigravity → Ollama Cloud.
+  - When both are configured, the fixed order is Codex → Ollama Cloud.
 - **A Telegram bot** — create one via [@BotFather](https://t.me/BotFather), copy the token, and either invite the bot to your channel as admin or send it `/start` from your account.
 
 ### Install
@@ -92,9 +91,9 @@ cp env.example .env
 | `TELEGRAM_DEFAULT_CHAT_ID` | Fallback chat (your user id from [@userinfobot](https://t.me/userinfobot)) |
 | `TELEGRAM_DIGEST_CHAT` | Channel for the hourly digest. **Override the default** — `@azalio_tech_summary` belongs to the author. |
 
-Optional (collectors/providers silently skip when unset): `FINNHUB_API_KEY`, `NEWSAPI_KEY`, `CODEX_BIN`, `AGY_BIN`, `OLLAMA_API_KEY`, `OLLAMA_MODEL`, `RU_NEWS_SCRIPT`, `MARKET_NEWS_SCRIPT`, `TELEGRAM_API_ID` / `TELEGRAM_API_HASH` / `TELEGRAM_PHONE` / `TELEGRAM_CHANNELS` (Telegram channel collector). See `env.example` for the full list.
+Optional (collectors/providers silently skip when unset): `FINNHUB_API_KEY`, `NEWSAPI_KEY`, `CODEX_BIN`, `OLLAMA_API_KEY`, `OLLAMA_MODEL`, `RU_NEWS_SCRIPT`, `MARKET_NEWS_SCRIPT`, `TELEGRAM_API_ID` / `TELEGRAM_API_HASH` / `TELEGRAM_PHONE` / `TELEGRAM_CHANNELS` (Telegram channel collector). See `env.example` for the full list.
 
-If the LLM CLIs are not on your `$PATH` (e.g. cron has a minimal PATH), pin them explicitly with `CODEX_BIN` or `AGY_BIN`.
+If Codex CLI is not on your `$PATH` (e.g. cron has a minimal PATH), pin it explicitly with `CODEX_BIN`.
 
 ### Telegram channel collector (optional)
 
@@ -142,7 +141,7 @@ The hourly run collects and publishes in one pass. A quiet hour ends with the ed
 
 To switch back to rare issues instead: run the hourly line with `--collect` (accumulates into `pending_intel.txt` without publishing) and add flagless lines for the publishing hours. Cron hours are **UTC** (the VM's system TZ); MSK = UTC+3 year-round. Change the schedule in `deploy/install-cron.sh`, not by hand-editing the crontab — `make install-cron` rewrites the managed block.
 
-Cron has a minimal `$PATH`, so the LLM CLI may not be found by name. `core.py` adds `~/.local/bin`; pin other locations via `CODEX_BIN` or `AGY_BIN` inside `.env`.
+Cron has a minimal `$PATH`, so Codex CLI may not be found by name. `core.py` adds common user bin directories; pin another location via `CODEX_BIN` inside `.env`.
 
 ### Log rotation
 
@@ -195,11 +194,11 @@ The archive contains `.env` and `workspace/`; everything else is rebuilt from th
 python3 -m pytest test_dedup.py -v
 ```
 
-110 tests. The first run downloads the E5 model (~470 MB) into HuggingFace cache.
+109 tests. The first run downloads the E5 model (~470 MB) into HuggingFace cache.
 
 ## Why CLI-first LLM fallback?
 
-Codex and Antigravity CLIs handle their own authentication and model selection. Ollama Cloud remains an HTTP fallback when neither CLI returns a publishable result. The bot does not stream tokens; the hourly job only needs the final editor response.
+Codex CLI handles its own authentication and model selection. Ollama Cloud remains an HTTP fallback when Codex does not return a publishable result. The bot does not stream tokens; the hourly job only needs the final editor response.
 
 ## Status
 

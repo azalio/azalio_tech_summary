@@ -969,81 +969,39 @@ class TestReasoningSuppression:
     def test_clean_llm_output_handles_transport_variants(self, output, expected):
         assert core_mod._clean_llm_output(output) == expected
 
-    def test_reasoning_only_codex_falls_back_to_agy(self, monkeypatch):
+    def test_reasoning_only_codex_falls_back_to_ollama(self, monkeypatch):
         c = _bare_core()
-        monkeypatch.setattr(core_mod, "OLLAMA_API_KEY", "")
+        monkeypatch.setattr(core_mod, "OLLAMA_API_KEY", "test-key")
         monkeypatch.delenv("CODEX_BIN", raising=False)
-        monkeypatch.delenv("AGY_BIN", raising=False)
         monkeypatch.setattr(
             core_mod.shutil,
             "which",
-            lambda cli, path=None: (
-                f"/usr/bin/{cli}" if cli in {"codex", "agy"} else None
-            ),
+            lambda cli, path=None: "/usr/bin/codex" if cli == "codex" else None,
         )
         c._run_codex = lambda resolved, prompt, env, timeout: "<think>No final yet"
-        c._run_agy = lambda resolved, prompt, env, timeout: "• Fallback final"
+        c._run_ollama = lambda prompt, timeout: "• Fallback final"
 
         assert c.ask_llm("prompt") == "• Fallback final"
 
 
 class TestLlmProviderPriority:
-    def test_codex_then_agy_then_ollama(self, monkeypatch):
+    def test_codex_then_ollama(self, monkeypatch):
         c = _bare_core()
         calls = []
         monkeypatch.setattr(core_mod, "OLLAMA_API_KEY", "test-key")
         monkeypatch.delenv("CODEX_BIN", raising=False)
-        monkeypatch.delenv("AGY_BIN", raising=False)
         monkeypatch.setattr(
             core_mod.shutil,
             "which",
-            lambda cli, path=None: (
-                f"/usr/bin/{cli}" if cli in {"codex", "agy"} else None
-            ),
+            lambda cli, path=None: "/usr/bin/codex" if cli == "codex" else None,
         )
         c._run_codex = lambda resolved, prompt, env, timeout: calls.append("codex")
-        c._run_agy = lambda resolved, prompt, env, timeout: calls.append("agy")
         c._run_ollama = lambda prompt, timeout: (
             calls.append("ollama") or "• Final digest"
         )
 
         assert c.ask_llm("prompt") == "• Final digest"
-        assert calls == ["codex", "agy", "ollama"]
-
-    def test_agy_uses_sandboxed_noninteractive_print_mode(self, monkeypatch):
-        c = _bare_core()
-        captured = {}
-        monkeypatch.setattr(core_mod, "OLLAMA_API_KEY", "")
-        monkeypatch.delenv("CODEX_BIN", raising=False)
-        monkeypatch.delenv("AGY_BIN", raising=False)
-        monkeypatch.setattr(
-            core_mod.shutil,
-            "which",
-            lambda cli, path=None: (
-                "/home/azalio/.local/bin/agy" if cli == "agy" else None
-            ),
-        )
-
-        def fake_subprocess(argv, prompt, env, timeout, stdout):
-            captured.update(argv=argv, prompt=prompt, timeout=timeout)
-            return 0, "• Final digest", ""
-
-        c._run_subprocess = fake_subprocess
-
-        assert c.ask_llm("digest prompt") == "• Final digest"
-        assert captured == {
-            "argv": [
-                "/home/azalio/.local/bin/agy",
-                "--sandbox",
-                "--disable-slash-commands",
-                "--print-timeout",
-                "235s",
-                "-p",
-                "digest prompt",
-            ],
-            "prompt": "",
-            "timeout": 240,
-        }
+        assert calls == ["codex", "ollama"]
 
 
 class TestSplitOversizedSection:

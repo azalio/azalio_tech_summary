@@ -337,7 +337,7 @@ class VibeCore:
         return data["choices"][0]["message"]["content"]
 
     def ask_llm(self, prompt):
-        """Run LLM providers in the order Codex, Antigravity, Ollama.
+        """Run LLM providers in the order Codex, Ollama.
 
         Cron runs with a minimal PATH, so we try absolute paths first.
         Codex prints a decorated transcript to stdout, so we redirect its
@@ -360,7 +360,6 @@ class VibeCore:
                 [os.environ.get("CODEX_BIN", ""), "codex"],
                 self._run_codex,
             ),
-            ("agy", [os.environ.get("AGY_BIN", ""), "agy"], self._run_agy),
         ]
 
         # Dedupe by resolved binary: env-var + PATH lookup often point at the
@@ -450,26 +449,3 @@ class VibeCore:
                 os.unlink(out_path)
             except OSError:
                 pass
-
-    def _run_agy(self, resolved, prompt, env, timeout):
-        print_timeout = max(1, timeout - 5)
-        rc, out, err = self._run_subprocess(
-            [
-                resolved,
-                "--sandbox",
-                "--disable-slash-commands",
-                "--print-timeout",
-                f"{print_timeout}s",
-                "-p",
-                prompt,
-            ],
-            "",
-            env,
-            timeout,
-            stdout=subprocess.PIPE,
-        )
-        if rc == 0 and out and out.strip():
-            return out.strip()
-        if err and err.strip():
-            print(f"agy stderr: {err.strip()[:500]}")
-        return None

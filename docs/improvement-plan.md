@@ -9,7 +9,7 @@
 - Why not already tried: the architecture lists durable metrics, alerting, and tracing beyond stdout as out of scope, and current audit rows are editor-centric rather than full run observability.
 - Implementation layer: `main.py`, `collectors.py`, `health.py`, `core.py`, and `eval_digest.py`.
 - Missing capability: machine-readable run telemetry that distinguishes source failure, LLM fallback, quiet-hour no-post, Telegram delivery failure, and successful publication.
-- Architecture evidence: `docs/architecture.md` describes hourly cron execution, optional collectors, `source_health.json`, LLM fallback through Codex/Antigravity/Ollama, Telegram delivery, and `digest_runs.jsonl`; Known Risks/Gaps explicitly call out silent smaller prompts and lack of durable metrics/tracing.
+- Architecture evidence: `docs/architecture.md` describes hourly cron execution, optional collectors, `source_health.json`, LLM fallback through Codex/Ollama, Telegram delivery, and `digest_runs.jsonl`; Known Risks/Gaps explicitly call out silent smaller prompts and lack of durable metrics/tracing.
 
 ### Proposed Changes
 
