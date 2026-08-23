@@ -6,17 +6,12 @@ import re
 import shutil
 import tempfile
 
-# Per-CLI wall-clock budget for an LLM call. Pinned-model Gemini answers a 28KB
-# digest prompt in ~37s and Codex fails fast on quota (~10s), so 240s is pure
-# safety margin against a transient slow run. Override via LLM_TIMEOUT.
+# Per-provider wall-clock budget for an LLM call. It stays below the hourly cron
+# interval and is configurable for slower provider responses via LLM_TIMEOUT.
 try:
     LLM_TIMEOUT = int(os.environ.get("LLM_TIMEOUT", "240"))
 except ValueError:
     LLM_TIMEOUT = 240
-
-# Model to pin Gemini to (skips gemini-cli's slow model-router). Override via
-# GEMINI_MODEL if the CLI's model id changes; set empty to let the router pick.
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3-flash-preview")
 
 # api.telegram.org недоступен с этой VM напрямую (исходящий трафик к подсетям
 # Telegram дропается), поэтому Bot API ходит через SOCKS5-туннель до VPN-хоста
@@ -24,7 +19,8 @@ GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3-flash-preview")
 TELEGRAM_PROXY = os.environ.get("TELEGRAM_PROXY", "").strip()
 TG_PROXIES = {"http": TELEGRAM_PROXY, "https": TELEGRAM_PROXY} if TELEGRAM_PROXY else None
 
-# Ollama Cloud — основной провайдер LLM. Пустой ключ = не пробовать, сразу CLI.
+# Ollama Cloud — последний fallback после локальных LLM CLI.
+# Пустой ключ = не пробовать.
 # Модель менять через OLLAMA_MODEL: kimi-k3 требует extra usage сверх тарифа,
 # minimax-m3 входит в план и на промпте дайджеста отвечает за ~4с.
 OLLAMA_API_KEY = os.environ.get("OLLAMA_API_KEY", "").strip()
@@ -53,7 +49,7 @@ def _clean_llm_output(output):
 
     text = str(output).strip()
 
-    # Gemini CLI can wrap its answer in {"response": "..."}. Unwrap before
+    # A provider can wrap its answer in {"response": "..."}. Unwrap before
     # filtering so an unterminated reasoning block cannot leave a malformed,
     # non-empty JSON prefix that would later be posted verbatim.
     try:
@@ -341,29 +337,12 @@ class VibeCore:
         return data["choices"][0]["message"]["content"]
 
     def ask_llm(self, prompt):
-        """Run Ollama/LLM CLI providers in cron-safe mode.
+        """Run LLM providers in the order Codex, Antigravity, Ollama.
 
         Cron runs with a minimal PATH, so we try absolute paths first.
         Codex prints a decorated transcript to stdout, so we redirect its
         final-message output to a temp file and read it back.
         """
-
-        # Ollama Cloud идёт первым: оба CLI отказали не по нашей вине — codex
-        # режет регион (403 unsupported_country_region_territory), а gemini-cli
-        # больше не обслуживает индивидуальный тариф (IneligibleTierError).
-        # Ollama — HTTP, без CLI и без их проблем с PATH под cron.
-        if OLLAMA_API_KEY:
-            print(f"Trying ollama ({OLLAMA_MODEL})...")
-            try:
-                out = self._run_ollama(prompt, timeout=LLM_TIMEOUT)
-            except Exception as e:
-                print(f"ollama failed: {e}")
-            else:
-                clean = _clean_llm_output(out)
-                if clean:
-                    return clean
-                if out and out.strip():
-                    print("ollama returned reasoning without a final answer; trying fallback")
 
         # Extend PATH for subprocesses (cron runs with a minimal PATH)
         extra_paths = [
@@ -374,15 +353,14 @@ class VibeCore:
         env = os.environ.copy()
         env["PATH"] = ":".join(extra_paths + [env.get("PATH", "")])
 
-        # Each entry: (name, path hints, runner). Runner returns clean text or None.
-        # Prefer Codex for quality; on quota exhaustion / failure it returns None
-        # in ~10s (immediate rc=1) and we fall through to Gemini. Gemini used to
-        # blow the timeout because gemini-cli's model-router retries on every
-        # call (~182s on a 28KB prompt); _run_gemini now pins a model to skip the
-        # router (~37s), so the fallback is reliable.
+        # Each entry: (name, path hints, runner). Runner returns text or None.
         candidates = [
-            ("codex", [os.environ.get("CODEX_BIN", ""), "codex"], self._run_codex),
-            ("gemini", [os.environ.get("GEMINI_BIN", ""), "gemini"], self._run_gemini),
+            (
+                "codex",
+                [os.environ.get("CODEX_BIN", ""), "codex"],
+                self._run_codex,
+            ),
+            ("agy", [os.environ.get("AGY_BIN", ""), "agy"], self._run_agy),
         ]
 
         # Dedupe by resolved binary: env-var + PATH lookup often point at the
@@ -406,7 +384,23 @@ class VibeCore:
                 if clean:
                     return clean
                 if out and out.strip():
-                    print(f"{name} returned reasoning without a final answer; trying fallback")
+                    print(
+                        f"{name} returned reasoning without a final answer; "
+                        "trying fallback"
+                    )
+
+        if OLLAMA_API_KEY:
+            print(f"Trying ollama ({OLLAMA_MODEL})...")
+            try:
+                out = self._run_ollama(prompt, timeout=LLM_TIMEOUT)
+            except Exception as e:
+                print(f"ollama failed: {e}")
+            else:
+                clean = _clean_llm_output(out)
+                if clean:
+                    return clean
+                if out and out.strip():
+                    print("ollama returned reasoning without a final answer")
 
         return None
 
@@ -432,21 +426,6 @@ class VibeCore:
             raise
         return process.returncode, out, err
 
-    def _run_gemini(self, resolved, prompt, env, timeout):
-        # Pin the model to bypass gemini-cli's model-router: its
-        # NumericalClassifierStrategy retries on every call ("Retry attempts
-        # exhausted"), pushing a 28KB digest prompt to ~182s (over the old 180s
-        # timeout → killed). Pinned, the same prompt returns in ~37s.
-        argv = [resolved, "-m", GEMINI_MODEL] if GEMINI_MODEL else [resolved]
-        rc, out, err = self._run_subprocess(
-            argv, prompt, env, timeout, stdout=subprocess.PIPE,
-        )
-        if rc == 0 and out and out.strip():
-            return out.strip()
-        if err and err.strip():
-            print(f"gemini stderr: {err.strip()[:500]}")
-        return None
-
     def _run_codex(self, resolved, prompt, env, timeout):
         fd, out_path = tempfile.mkstemp(prefix="codex_out_", suffix=".txt")
         os.close(fd)
@@ -471,3 +450,26 @@ class VibeCore:
                 os.unlink(out_path)
             except OSError:
                 pass
+
+    def _run_agy(self, resolved, prompt, env, timeout):
+        print_timeout = max(1, timeout - 5)
+        rc, out, err = self._run_subprocess(
+            [
+                resolved,
+                "--sandbox",
+                "--disable-slash-commands",
+                "--print-timeout",
+                f"{print_timeout}s",
+                "-p",
+                prompt,
+            ],
+            "",
+            env,
+            timeout,
+            stdout=subprocess.PIPE,
+        )
+        if rc == 0 and out and out.strip():
+            return out.strip()
+        if err and err.strip():
+            print(f"agy stderr: {err.strip()[:500]}")
+        return None

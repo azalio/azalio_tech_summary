@@ -41,7 +41,8 @@ In scope:
 - Surfacing multi-source event bursts to the LLM prompt as ranking hints while
   keeping observations and source counts out of the published digest unless the
   count is itself newsworthy.
-- Calling an installed LLM CLI, preferring Gemini and falling back to Codex.
+- Calling LLM providers in the fixed order Codex CLI → Antigravity CLI →
+  Ollama Cloud.
 - Refusing to publish raw collector output when the LLM layer returns no digest,
   while notifying the operator and preserving retry state.
 - Accumulating unedited intelligence for up to 24 hours across LLM or Telegram
@@ -147,14 +148,14 @@ the previous digest text.
   identical headlines before paying for an E5 encode. It tracks clusters touched
   during the current process, marks already reported clusters, and exposes
   high/medium source-burst summaries through `event_signals()`.
-- `core.py` owns LLM CLI execution and Telegram delivery. It discovers Gemini or
-  Codex from explicit env vars or PATH, deduplicates resolved binaries, pins
-  Gemini to `GEMINI_MODEL` by default so the fallback does not depend on the
-  CLI model router, runs Codex through
+- `core.py` owns LLM execution and Telegram delivery. It discovers Codex and
+  Antigravity from explicit env vars or PATH, deduplicates resolved binaries,
+  runs Codex through
   `codex exec --skip-git-repo-check -o <tmpfile> -` so cron can capture the
-  final response without entering the TUI, kills timed-out child processes,
-  converts basic Markdown to Telegram HTML, and falls back to plain text if
-  Telegram rejects HTML.
+  final response without entering the TUI, runs Antigravity through sandboxed
+  non-interactive `agy -p`, falls back to the Ollama Cloud HTTP endpoint,
+  kills timed-out child processes, converts basic Markdown to Telegram HTML,
+  and falls back to plain text if Telegram rejects HTML.
 - `standalone_reddit_digest.py` is the bundled Reddit fetcher used by
   `Collectors.collect_reddit`.
 - `standalone_telegram_digest.py` is the optional Telethon collector for
@@ -196,13 +197,13 @@ the previous digest text.
 7. `main.py` inserts the previous digest and new source data into `VIBE_PROMPT`.
 8. `main.py` formats current-run event signals and includes them in the prompt
    as ranking-only context. In dry-run mode, the prompt is printed. Otherwise
-   `VibeCore.ask_llm` calls Ollama Cloud when configured, then Codex and Gemini
-   as fallbacks. Before returning, it removes tagged model reasoning and treats a
-   reasoning-only or unterminated reasoning response as empty, so the next
-   provider is tried and hidden analysis cannot reach the audit log, previous
-   summary, or Telegram. The fallback
-   path is CLI-specific: Gemini reads stdin/stdout directly, while Codex writes
-   its final answer to a temporary output file.
+   `VibeCore.ask_llm` calls Codex, then server-side Antigravity, then Ollama
+   Cloud when configured. Before returning, it removes tagged model reasoning
+   and treats a reasoning-only or unterminated reasoning response as empty, so
+   the next provider is tried and hidden analysis cannot reach the audit log,
+   previous summary, or Telegram. The fallback path is provider-specific:
+   Antigravity prints to stdout, Codex writes its final answer to a temporary
+   output file, and Ollama returns an HTTP response.
 9. `VibeCore.send_tg` formats the digest, posts it to Telegram, splits it by
    topic section when it exceeds the Telegram message limit, line-splits any
    single oversized section, and returns whether every part was delivered.
@@ -292,8 +293,9 @@ surface as URL/event dedup state and the previous digest.
 - Graceful degradation: missing optional API keys, missing optional scripts, and
   individual source fetch failures usually return an empty collector result
   instead of aborting the run.
-- CLI-based LLM boundary: model authentication and rate-limit handling are
-  delegated to installed Gemini or Codex CLIs rather than SDK credentials.
+- CLI-first LLM boundary: model authentication and rate-limit handling are
+  delegated to installed Codex and Antigravity CLIs before the Ollama HTTP
+  fallback.
   Codex is invoked through non-interactive `codex exec`; running bare `codex`
   is not a valid cron fallback because it opens an interactive interface.
 - Telegram formatting boundary: generated Markdown-like output is transformed to
@@ -369,5 +371,5 @@ immediate action for the reader; and the run loop now persists
 `pending_intel.txt` across LLM or Telegram failures so already collected news is
 retried for up to 24 hours instead of being silently dropped. The earlier
 architecture remains valid for Watcha/X acquisition, source-health baselines,
-quiet-hour no-post handling, editor audit rows, Gemini/Codex CLI boundaries, and
-semantic deduplication.
+quiet-hour no-post handling, editor audit rows, Codex/Antigravity/Ollama
+boundaries, and semantic deduplication.

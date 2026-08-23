@@ -154,7 +154,9 @@ Reads X sources **without the paid X API** via a fault-tolerant cascade — see
 
 ## LLM CLI & VPN (important)
 
-`core.ask_llm` tries **codex** first, then **gemini** (subprocess, inherits env).
+`core.ask_llm` tries **codex** first, then server-side **agy**, then
+**Ollama Cloud**. Cron discovery includes `~/.local/bin`; use `CODEX_BIN` /
+`AGY_BIN` to pin explicit CLI paths.
 codex talks to `chatgpt.com`, which **403s the server's bare IP** — it only works
 because the box egresses through a VPN (AmneziaWG `awg-quick@Germany`, full-tunnel
 except SSH). If codex starts 403'ing again, the VPN routing rules have likely been

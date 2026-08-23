@@ -11,6 +11,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+import core as core_mod
 from dedup import (
     EventDedup,
     normalize_headline,
@@ -925,6 +926,7 @@ class TestReasoningSuppression:
     def test_ask_llm_returns_only_final_after_think_blocks(self, monkeypatch):
         c = _bare_core()
         monkeypatch.setattr(core_mod, "OLLAMA_API_KEY", "test-key")
+        monkeypatch.setattr(core_mod.shutil, "which", lambda *args, **kwargs: None)
         c._run_ollama = lambda prompt, timeout: (
             "<think>First draft.</think>\n"
             "<think>Reconsidering the source.</think>\n\n"
@@ -967,20 +969,81 @@ class TestReasoningSuppression:
     def test_clean_llm_output_handles_transport_variants(self, output, expected):
         assert core_mod._clean_llm_output(output) == expected
 
-    def test_reasoning_only_ollama_falls_back_to_codex(self, monkeypatch):
+    def test_reasoning_only_codex_falls_back_to_agy(self, monkeypatch):
         c = _bare_core()
-        monkeypatch.setattr(core_mod, "OLLAMA_API_KEY", "test-key")
+        monkeypatch.setattr(core_mod, "OLLAMA_API_KEY", "")
         monkeypatch.delenv("CODEX_BIN", raising=False)
-        monkeypatch.delenv("GEMINI_BIN", raising=False)
+        monkeypatch.delenv("AGY_BIN", raising=False)
         monkeypatch.setattr(
             core_mod.shutil,
             "which",
-            lambda cli, path=None: "/usr/bin/codex" if cli == "codex" else None,
+            lambda cli, path=None: (
+                f"/usr/bin/{cli}" if cli in {"codex", "agy"} else None
+            ),
         )
-        c._run_ollama = lambda prompt, timeout: "<think>No final yet"
-        c._run_codex = lambda resolved, prompt, env, timeout: "• Fallback final"
+        c._run_codex = lambda resolved, prompt, env, timeout: "<think>No final yet"
+        c._run_agy = lambda resolved, prompt, env, timeout: "• Fallback final"
 
         assert c.ask_llm("prompt") == "• Fallback final"
+
+
+class TestLlmProviderPriority:
+    def test_codex_then_agy_then_ollama(self, monkeypatch):
+        c = _bare_core()
+        calls = []
+        monkeypatch.setattr(core_mod, "OLLAMA_API_KEY", "test-key")
+        monkeypatch.delenv("CODEX_BIN", raising=False)
+        monkeypatch.delenv("AGY_BIN", raising=False)
+        monkeypatch.setattr(
+            core_mod.shutil,
+            "which",
+            lambda cli, path=None: (
+                f"/usr/bin/{cli}" if cli in {"codex", "agy"} else None
+            ),
+        )
+        c._run_codex = lambda resolved, prompt, env, timeout: calls.append("codex")
+        c._run_agy = lambda resolved, prompt, env, timeout: calls.append("agy")
+        c._run_ollama = lambda prompt, timeout: (
+            calls.append("ollama") or "• Final digest"
+        )
+
+        assert c.ask_llm("prompt") == "• Final digest"
+        assert calls == ["codex", "agy", "ollama"]
+
+    def test_agy_uses_sandboxed_noninteractive_print_mode(self, monkeypatch):
+        c = _bare_core()
+        captured = {}
+        monkeypatch.setattr(core_mod, "OLLAMA_API_KEY", "")
+        monkeypatch.delenv("CODEX_BIN", raising=False)
+        monkeypatch.delenv("AGY_BIN", raising=False)
+        monkeypatch.setattr(
+            core_mod.shutil,
+            "which",
+            lambda cli, path=None: (
+                "/home/azalio/.local/bin/agy" if cli == "agy" else None
+            ),
+        )
+
+        def fake_subprocess(argv, prompt, env, timeout, stdout):
+            captured.update(argv=argv, prompt=prompt, timeout=timeout)
+            return 0, "• Final digest", ""
+
+        c._run_subprocess = fake_subprocess
+
+        assert c.ask_llm("digest prompt") == "• Final digest"
+        assert captured == {
+            "argv": [
+                "/home/azalio/.local/bin/agy",
+                "--sandbox",
+                "--disable-slash-commands",
+                "--print-timeout",
+                "235s",
+                "-p",
+                "digest prompt",
+            ],
+            "prompt": "",
+            "timeout": 240,
+        }
 
 
 class TestSplitOversizedSection:
@@ -1077,59 +1140,6 @@ class TestLexicalPreDedup:
         cluster = d._clusters[0]
         assert cluster["count"] == 2
         d.close()
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# 6. ask_llm Gemini model-pinning (core.VibeCore)
-# ═══════════════════════════════════════════════════════════════════════════
-
-import core as core_mod
-
-
-class TestGeminiModelPinning:
-    """Gemini-cli's model-router (NumericalClassifierStrategy) retries on every
-    call, pushing a 28KB digest prompt to ~182s — over the old 180s timeout, so
-    the codex→gemini fallback was getting killed 2s short and the digest never
-    posted. Pinning the model with `-m` skips the router (~37s)."""
-
-    def test_run_gemini_pins_model_and_forwards_timeout(self):
-        c = _bare_core()
-        captured = {}
-
-        def fake_subprocess(argv, prompt, env, timeout, stdout):
-            captured["argv"] = argv
-            captured["timeout"] = timeout
-            return 0, '{"response": "ok"}', ""
-
-        c._run_subprocess = fake_subprocess
-        out = c._run_gemini("/usr/bin/gemini", "prompt", {}, timeout=240)
-
-        assert out == '{"response": "ok"}'
-        assert captured["argv"][0] == "/usr/bin/gemini"
-        assert "-m" in captured["argv"], "must pin a model to skip the router"
-        i = captured["argv"].index("-m")
-        assert captured["argv"][i + 1] == core_mod.GEMINI_MODEL
-        assert captured["timeout"] == 240
-
-    def test_run_gemini_no_pin_when_model_empty(self, monkeypatch):
-        """Empty GEMINI_MODEL is the documented escape hatch — fall back to the
-        router (bare argv) rather than passing `-m ''`."""
-        monkeypatch.setattr(core_mod, "GEMINI_MODEL", "")
-        c = _bare_core()
-        captured = {}
-
-        def fake_subprocess(argv, prompt, env, timeout, stdout):
-            captured["argv"] = argv
-            return 0, "out", ""
-
-        c._run_subprocess = fake_subprocess
-        c._run_gemini("/usr/bin/gemini", "prompt", {}, timeout=240)
-        assert captured["argv"] == ["/usr/bin/gemini"]
-
-    def test_llm_timeout_exceeds_unpinned_worst_case(self):
-        """The budget must clear the ~182s an unpinned gemini run can take, so a
-        transient router stall doesn't reintroduce the clipped-at-180s failure."""
-        assert core_mod.LLM_TIMEOUT >= 200
 
 
 # ═══════════════════════════════════════════════════════════════════════════
