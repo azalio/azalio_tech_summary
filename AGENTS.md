@@ -77,6 +77,11 @@ cross-language) still goes through E5 exactly as before. Tunable/disable via
 
 ## Ranking, source-health & eval
 
+- **Reader relevance comes before ranking** (`VIBE_PROMPT` in `main.py`):
+  a release, speedup, or AI label is insufficient. Drop narrow DataFrame,
+  ETL/BI, and text-to-SQL improvements unless the input shows a direct effect
+  on platform operations or coding-agent reliability. Polars row-order/speed
+  changes and SafeQL query-repair percentages are negative examples.
 - **Engagement ranking** (`ranking.py`): every collector registers a structured
   `Candidate` (with source-native engagement — HN pts / Reddit score / Habr+HF
   upvotes / GitHub stars-day / Telegram views). `main.py` fuses them
