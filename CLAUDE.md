@@ -90,8 +90,9 @@ cross-language) still goes through E5 exactly as before. Tunable/disable via
   for every item, at most **one 🔬 per issue**, and an arXiv/HF paper without
   released code or a model may only appear as 🔬, never 🆕.
 - **Voice** (same prompt): each item may carry one optional `↳ ` line after
-  the link (≤15 words, a concrete action or change for the reader; hype/"worth
-  watching" phrasing is banned there too), and **dev-culture events** (a
+  the link (≤15 words, a concrete *consequence* for the reader stated as a
+  fact — never advice or an imperative like «попробуй»/«добавь»/«обнови»;
+  hype/"worth watching" phrasing is banned there too), and **dev-culture events** (a
   maintainer quits, a license/process change, a company bans or mandates AI
   tools) pass as their own gate with the 💬 label, at most one per issue.
   Opinion columns stay banned; the item must be an act with a consequence.

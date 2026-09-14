@@ -881,6 +881,10 @@ class TestRadarPrompt:
 
         assert "ЗАЧЕМ-СТРОКА" in VIBE_PROMPT
         assert "↳ " in VIBE_PROMPT
+        # Первый прод-выпуск выдал советы («Попробуй…», «Добавь…») — строка
+        # обязана быть следствием, а не заданием.
+        assert "повелительное наклонение и рекомендации запрещены" in VIBE_PROMPT
+        assert "⛔ «↳ Попробуй" in VIBE_PROMPT
         assert "СОБЫТИЯ ДЕВ-КУЛЬТУРЫ" in VIBE_PROMPT
         assert "💬 — событие дев-культуры" in VIBE_PROMPT
         assert "Не больше одного 💬 на выпуск" in VIBE_PROMPT
