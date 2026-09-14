@@ -82,6 +82,19 @@ cross-language) still goes through E5 exactly as before. Tunable/disable via
   ETL/BI, and text-to-SQL improvements unless the input shows a direct effect
   on platform operations or coding-agent reliability. Polars row-order/speed
   changes and SafeQL query-repair percentages are negative examples.
+  Likewise **ML-systems research for model trainers** (training/fine-tuning
+  recipes like GRPO+LoRA, CUDA/HIP/Triton kernel corpora, GPU profilers and
+  utilization studies, agent-training benchmarks/memory mechanisms) is banned
+  unless it's a ready tool/model the reader can run today. The litmus test
+  ("will azalio act on it this week / retell it to a colleague?") is mandatory
+  for every item, at most **one 🔬 per issue**, and an arXiv/HF paper without
+  released code or a model may only appear as 🔬, never 🆕.
+- **Voice** (same prompt): each item may carry one optional `↳ ` line after
+  the link (≤15 words, a concrete action or change for the reader; hype/"worth
+  watching" phrasing is banned there too), and **dev-culture events** (a
+  maintainer quits, a license/process change, a company bans or mandates AI
+  tools) pass as their own gate with the 💬 label, at most one per issue.
+  Opinion columns stay banned; the item must be an act with a consequence.
 - **Engagement ranking** (`ranking.py`): every collector registers a structured
   `Candidate` (with source-native engagement — HN pts / Reddit score / Habr+HF
   upvotes / GitHub stars-day / Telegram views). `main.py` fuses them

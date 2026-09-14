@@ -858,6 +858,35 @@ class TestRadarPrompt:
         for term in ("CVE", "эксплойты", "breaches", "security-advisories"):
             assert term in VIBE_PROMPT, term
 
+    def test_prompt_caps_ml_research(self):
+        """Выпуск скатывался в ленту arXiv/HF про обучение моделей и GPU-ядра
+        (GRPO+LoRA, профилировщики, корпуса ядер) — читатель модели не обучает.
+        Гард: класс запрещён явно, литмус обязателен для каждого пункта,
+        🔬 не больше одного на выпуск, paper без кода/модели — только 🔬."""
+        from main import VIBE_PROMPT
+
+        assert "ML-инфраструктура для тех, кто ОБУЧАЕТ модели" in VIBE_PROMPT
+        for term in ("GRPO", "LoRA", "Triton", "GPU-профилировщики"):
+            assert term in VIBE_PROMPT, term
+        assert "ЛИТМУС-ТЕСТ — обязателен для КАЖДОГО пункта" in VIBE_PROMPT
+        assert "НЕ БОЛЬШЕ ОДНОГО 🔬 на выпуск" in VIBE_PROMPT
+        assert "может идти ТОЛЬКО как 🔬" in VIBE_PROMPT
+
+    def test_prompt_allows_why_line_and_dev_culture(self):
+        """Лента была сухой: факт + ссылка без «зачем», а события дев-культуры
+        (ушёл мейнтейнер, компания запретила AI-инструменты) резались как
+        «мнения и колонки». Гард: ↳ зачем-строка разрешена (одна, конкретная),
+        💬 — отдельные пропускные ворота и метка, не больше одной на выпуск."""
+        from main import VIBE_PROMPT
+
+        assert "ЗАЧЕМ-СТРОКА" in VIBE_PROMPT
+        assert "↳ " in VIBE_PROMPT
+        assert "СОБЫТИЯ ДЕВ-КУЛЬТУРЫ" in VIBE_PROMPT
+        assert "💬 — событие дев-культуры" in VIBE_PROMPT
+        assert "Не больше одного 💬 на выпуск" in VIBE_PROMPT
+        # Запрет хвостов остался, но теперь про сам факт, а не про ↳ строку.
+        assert "внутри самого буллета" in VIBE_PROMPT
+
     def test_prompt_no_news_sentinel_matches_main(self):
         """Строка-пустышка в промпте обязана совпадать с маркером, по которому
         main.py гасит постинг, иначе тихий час уедет в канал как текст."""
