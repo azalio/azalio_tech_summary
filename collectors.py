@@ -15,6 +15,13 @@ from ranking import Candidate
 
 load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env'))
 
+# Сколько символов текста поста уходит редактору как Context. 400 отрезало
+# суть длинных Telegram-постов: цифры (×194 быстрее, 4,2¢/M) стоят во втором-
+# третьем абзаце, и редактор видел только вводку «собрали коллекцию…».
+# Фетчер отдаёт до 1200 (TEXT_TRUNCATE); дедуп по-прежнему смотрит text[:300].
+CONTEXT_CHARS = 900
+
+
 class Collectors:
     def __init__(self, workspace, dedup=None):
         self.workspace = workspace
@@ -404,7 +411,7 @@ class Collectors:
             metric_str = f" ({', '.join(metrics)})" if metrics else ""
             content += f"\n[r/{sub}] {title}{metric_str}\n"
             content += f"Link: {url}\n"
-            if p.get('text'): content += f"Context: {p['text'][:400]}\n"
+            if p.get('text'): content += f"Context: {p['text'][:CONTEXT_CHARS]}\n"
             # Top comment as a community-signal snippet (the fetcher sorts by top).
             top = p.get('top_comments') or []
             if top:
@@ -472,7 +479,7 @@ class Collectors:
                 content += f"  ({', '.join(metrics)})\n"
             content += f"Link: {url}\n"
             if text and text != title:
-                content += f"Context: {text[:400]}\n"
+                content += f"Context: {text[:CONTEXT_CHARS]}\n"
             self._add_candidate(
                 "Telegram", f"@{channel}", title, url,
                 line=f"[@{channel}] {title} - Link: {url}",
@@ -539,7 +546,7 @@ class Collectors:
             content += f"\n[X {author}] {title} (via {provider})\n"
             content += f"Link: {url}\n"
             if text and text != title:
-                content += f"Context: {text[:400]}\n"
+                content += f"Context: {text[:CONTEXT_CHARS]}\n"
             eng = p.get("engagement")
             self._add_candidate(
                 "X", author, title, url,
