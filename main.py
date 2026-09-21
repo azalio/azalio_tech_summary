@@ -13,6 +13,13 @@ load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
 from core import VibeCore
 from collectors import Collectors
 from dedup import EventDedup
+import logging
+# Решения дедупа (DUPLICATE / LEXICAL DUPLICATE с emb, overlap и кластером) —
+# в main.log. Без этого ложные слияния невидимы: магнит-кластеры нашли только
+# воспроизведением на копии базы. Остальные библиотеки — не громче WARNING.
+logging.basicConfig(level=logging.WARNING, stream=sys.stdout,
+                    format="%(levelname)s %(name)s: %(message)s")
+logging.getLogger("dedup").setLevel(logging.INFO)
 import ranking
 import health
 
@@ -49,7 +56,7 @@ VIBE_PROMPT = """Ты — high-signal радар канала @azalio_tech_summa
 
 ПОГРАНИЧНЫЕ СЛУЧАИ:
 • Примеры нерелевантных пунктов: «Polars 2.0 ускоряет streaming в 5 раз, но меняет порядок строк» → выбросить: частный выигрыш DataFrame-библиотеки; «SafeQL исправляет 87,4% ошибочных AI-generated SQL» → выбросить: узкая задача text-to-SQL. Применяй тот же критерий к аналогичным новостям с другими названиями и цифрами.
-• Примеры релевантных результатов: откат неудачных правок кодинг-агента; снижение VRAM для serving той же модели; устранение простоя Kubernetes-приложений после сбоя SQL-соединений оператора. Такие пункты оценивай по пропускным воротам, даже если в тексте есть SQL или рядом стоят отсеянные новости про аналитику.
+• Примеры релевантных результатов: откат неудачных правок кодинг-агента; снижение VRAM для serving той же модели; устранение простоя Kubernetes-приложений после сбоя SQL-соединений оператора; открытая локальная модель или инструмент, заменяющие облачный API-вызов на ноутбуке, с замерами задержки, памяти и цены. Такие пункты оценивай по пропускным воротам, даже если в тексте есть SQL или рядом стоят отсеянные новости про аналитику.
 • Концептуально интересные «большие вопросы» про AI и эмпирические истории про поведение моделей и агентов (мультиагентные симуляции, эмерджентное поведение, agent safety на длинных горизонтах) — это НЕ рутина и НЕ мусор. Бери, если история действительно любопытная, и помечай 🔬.
 • ЛИТМУС-ТЕСТ — обязателен для КАЖДОГО пункта, не только для сомнительных: «azalio сделает с этим что-то на этой неделе — сменит тариф, обновит стек, изменит конфиг, пересчитает бюджет GPU, попробует инструмент?» Либо «это настолько неожиданно, что он перескажет это коллеге?» Нет ни того, ни другого → выбрасывай. «Полезно знать», «расширяет инструментарий», «предложен механизм/бенчмарк» — это провал теста.
 
@@ -443,7 +450,7 @@ def main():
 
     # Log dedup stats
     stats = dedup.stats()
-    print(f"[DEDUP] Checked: {stats['checked']} | Duplicates: {stats['duplicates']} | Clusters: {stats['total_clusters']} | Items: {stats['total_items']}")
+    print(f"[DEDUP] Checked: {stats['checked']} | Duplicates: {stats['duplicates']} | Clusters: {stats['total_clusters']} | Items: {stats['total_items']} | Generic anchors: {stats['generic_anchors']}")
     signals = dedup.event_signals()
     event_signals = format_event_signals(signals)
     # NB: dedup is left open until after the post so mark_reported() can flag the

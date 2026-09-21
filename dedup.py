@@ -23,6 +23,7 @@ import sqlite3
 import struct
 import time
 import unicodedata
+from collections import Counter
 from typing import Optional
 
 import numpy as np
@@ -290,6 +291,8 @@ class EventDedup:
         centroid_update_limit: int = 10,
         lexical_jaccard_min: float = 0.90,
         min_lexical_tokens: int = 5,
+        generic_anchor_min_df: int = 20,
+        generic_anchor_frac: float = 0.003,
         dry_run: bool = False,
     ):
         self.gray_zone_min = gray_zone_min if gray_zone_min is not None else match_threshold
@@ -309,6 +312,16 @@ class EventDedup:
         # collisions. Set lexical_jaccard_min > 1.0 to disable.
         self.lexical_jaccard_min = lexical_jaccard_min
         self.min_lexical_tokens = min_lexical_tokens
+        # «Общие» якоря. extract_anchors берёт ЛЮБОЙ латинский токен, поэтому в
+        # паре EN↔EN якорями становятся обычные слова (open, source, ai, china,
+        # https) — и серая зона вырождается в «есть хоть одно общее слово».
+        # Накопительные якоря кластера превращают его в магнит: на проде кластер
+        # arXiv-статьи про реактор за 3 дня проглотил 12 чужих новостей (Laya,
+        # roguelike, Google…), а кластер про «AI-ошибку военных» — 50 новостей с
+        # 298 якорями. Якорь, встречающийся в заголовках ≥ max(min_df, frac·N)
+        # кластеров, не считается ни при сравнении, ни при накоплении.
+        self.generic_anchor_min_df = generic_anchor_min_df
+        self.generic_anchor_frac = generic_anchor_frac
         self.dry_run = dry_run
 
         os.makedirs(db_dir, exist_ok=True)
@@ -319,6 +332,11 @@ class EventDedup:
 
         # Load active clusters into memory
         self._clusters = self._load_clusters()
+        # Частота якоря по заголовкам-представителям живых кластеров (не по
+        # накопленным якорям — те уже загрязнены магнитами).
+        self._anchor_df: Counter = Counter()
+        for c in self._clusters:
+            self._anchor_df.update(extract_anchors(c["title"] or ""))
         self._stats = {"checked": 0, "duplicates": 0, "added": 0, "lexical_skips": 0}
         self._run_cluster_hits = {}
         self._run_cluster_sources = {}
@@ -475,6 +493,7 @@ class EventDedup:
             "reported": False,
         }
         self._clusters.append(cluster)
+        self._anchor_df.update(anchors)
         return cluster
 
     def _add_to_cluster(self, cluster: dict, vec: np.ndarray,
@@ -487,7 +506,7 @@ class EventDedup:
             norm = float(np.linalg.norm(blended))
             if norm > 0:
                 cluster["centroid"] = np.asarray(blended / norm, dtype=np.float32)
-        cluster["anchors"] |= anchors
+        cluster["anchors"] |= self._specific(anchors)
         cluster["numbers"]["year"] |= numbers["year"]
         cluster["numbers"]["version"] |= numbers["version"]
         cluster["last_seen"] = max(cluster["last_seen"], ts)
@@ -526,6 +545,16 @@ class EventDedup:
 
     # ── Matching ─────────────────────────────────────────────────────
 
+    def _generic_df(self) -> int:
+        """Порог df, начиная с которого якорь считается общим."""
+        return max(self.generic_anchor_min_df,
+                   int(self.generic_anchor_frac * len(self._clusters)))
+
+    def _specific(self, anchors: set) -> set:
+        """Якоря, которые реально различают события: без общих слов."""
+        thr = self._generic_df()
+        return {a for a in anchors if self._anchor_df.get(a, 0) < thr}
+
     def _find_best_cluster(self, vec: np.ndarray, anchors: set,
                            numbers: dict, ts: float) -> Optional[tuple]:
         if not self._clusters:
@@ -536,6 +565,9 @@ class EventDedup:
         best_overlap = 0.0
 
         matching_cutoff = ts - self.matching_ttl_hours * 3600
+        # Серая зона сравнивает только различающие якоря с обеих сторон: у
+        # легаси-кластеров в anchors накоплены и общие слова — режем при сравнении.
+        item_specific = self._specific(anchors)
 
         for cluster in self._clusters:
             # Skip clusters too old (story closed) or too large for matching
@@ -548,7 +580,8 @@ class EventDedup:
             if emb_sim < self.gray_zone_min:
                 continue
 
-            overlap = overlap_coefficient(anchors, cluster["anchors"])
+            overlap = overlap_coefficient(item_specific,
+                                          self._specific(cluster["anchors"]))
             conflict = number_conflict(numbers, cluster["numbers"])
 
             # A year/version conflict downgrades even high-confidence embedding
@@ -612,7 +645,7 @@ class EventDedup:
         Mirrors _add_to_cluster minus the centroid blend (we have no vector).
         Safe: the centroid is frozen after centroid_update_limit items anyway,
         and a near-identical headline would barely move it."""
-        cluster["anchors"] |= anchors
+        cluster["anchors"] |= self._specific(anchors)
         cluster["numbers"]["year"] |= numbers["year"]
         cluster["numbers"]["version"] |= numbers["version"]
         cluster["last_seen"] = max(cluster["last_seen"], ts)
@@ -751,8 +784,10 @@ class EventDedup:
         total_items = self._conn.execute(
             "SELECT COUNT(*) FROM cluster_items"
         ).fetchone()[0]
+        thr = self._generic_df()
+        generic = sum(1 for v in self._anchor_df.values() if v >= thr)
         return {**self._stats, "total_clusters": total_clusters,
-                "total_items": total_items}
+                "total_items": total_items, "generic_anchors": generic}
 
     def close(self):
         self._conn.close()

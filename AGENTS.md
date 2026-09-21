@@ -75,6 +75,18 @@ shortcut, NOT a replacement — anything below that bar (perphrase, extra word,
 cross-language) still goes through E5 exactly as before. Tunable/disable via
 `EventDedup(lexical_jaccard_min=…)`; `stats()["lexical_skips"]` counts hits.
 
+**Generic anchors are ignored.** `extract_anchors` takes *any* Latin token, so
+in an EN↔EN pair ordinary words (`open`, `source`, `ai`, `china`, `https`) are
+"anchors" and the gray-zone gate degenerates to "shares one common word";
+cumulative anchors then turn a cluster into a magnet (prod, Sep 2026: an arXiv
+reactor-simulation paper swallowed 12 unrelated items incl. Laya; an "AI error"
+news cluster swallowed 50 with 298 anchors). An anchor whose headline document
+frequency across loaded clusters is ≥ `max(generic_anchor_min_df=20,
+generic_anchor_frac=0.003·N)` is dropped from both the overlap comparison and
+from accumulation. Every DUPLICATE / LEXICAL DUPLICATE decision (emb, overlap,
+matched cluster) is logged to `main.log`; `[DEDUP] … Generic anchors: N` shows
+how many anchors are currently demoted.
+
 ## Ranking, source-health & eval
 
 - **Reader relevance comes before ranking** (`VIBE_PROMPT` in `main.py`):

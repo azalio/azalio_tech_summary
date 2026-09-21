@@ -10,6 +10,8 @@ import tempfile
 from datetime import datetime, timedelta, timezone
 
 import pytest
+import math
+import numpy as np
 
 import core as core_mod
 from dedup import (
@@ -445,6 +447,79 @@ class TestCrossLanguageDedup:
         )
 
         assert result is False, "Same Uber AI budget story should be deduplicated"
+
+
+class TestGenericAnchors:
+    """Регрессия магнит-кластеров (прод, 21.09.2026): кластер arXiv-статьи про
+    симулятор реактора проглотил пост про Laya (emb=0.90, overlap=1.00).
+    extract_anchors берёт любой латинский токен, поэтому в паре EN↔EN якорями
+    были обычные слова (open, source, ai, https); они же копились в кластере —
+    и серая зона вырождалась в «есть хоть одно общее слово». Гард: общие якоря
+    (df ≥ порога) не сравниваются и не накапливаются; различающие — работают."""
+
+    @staticmethod
+    def _stub_encode(dedup, cosine):
+        """Подменяет E5: первый текст → e1, каждый следующий → вектор с заданным
+        косинусом к e1 (серая зона), чтобы решал только якорный гейт."""
+        from dedup import EMBEDDING_DIM
+        e1 = np.zeros(EMBEDDING_DIM, dtype=np.float32); e1[0] = 1.0
+        e2 = np.zeros(EMBEDDING_DIM, dtype=np.float32); e2[1] = 1.0
+        seen = []
+
+        def enc(text):
+            if not seen:
+                seen.append(text)
+                return e1
+            return (cosine * e1 + math.sqrt(1 - cosine ** 2) * e2).astype(np.float32)
+
+        dedup._encode = enc
+
+    def test_generic_anchor_does_not_bridge_gray_zone(self, dedup):
+        self._stub_encode(dedup, 0.85)
+        # «open»/«source» встречаются в заголовках десятков кластеров — общие.
+        dedup._anchor_df.update({"open": 40, "source": 40})
+        assert dedup.check_and_add(
+            "Agentic Porting and Validation of Open Source Libraries for Reactor Simulation",
+            "ARXIV:cs.SE", "http://a1") is True
+        # Раньше: overlap({laya, open, source, alternative, jev}, {…open, source…})
+        # = 2/5 ≥ 0.30 → дубль реакторной статьи.
+        assert dedup.check_and_add(
+            "Laya: open source alternative to Jev",
+            "HackerNews", "http://a2") is True
+        assert dedup.stats()["total_clusters"] == 2
+
+    def test_specific_anchor_still_bridges_gray_zone(self, dedup):
+        self._stub_encode(dedup, 0.85)
+        dedup._anchor_df.update({"open": 40, "source": 40})
+        assert dedup.check_and_add(
+            "Laya open source decision model launches on Hugging Face",
+            "HackerNews", "http://b1") is True
+        # Кросс-язычный пересказ той же новости: общий различающий якорь laya.
+        assert dedup.check_and_add(
+            "Laya — открытая локальная модель решений, альтернатива Jev",
+            "Telegram:@x", "http://b2") is False
+
+    def test_generic_anchors_are_not_accumulated(self, dedup):
+        self._stub_encode(dedup, 0.85)
+        dedup._anchor_df.update({"open": 40, "source": 40})
+        dedup.check_and_add("Laya decision model launches", "HN", "http://c1")
+        assert dedup.check_and_add(
+            "Laya open source model now on Hugging Face", "HN", "http://c2") is False
+        cluster = dedup._clusters[0]
+        assert "laya" in cluster["anchors"]
+        assert "open" not in cluster["anchors"]
+        assert "source" not in cluster["anchors"]
+
+    def test_generic_threshold_has_floor_and_scales(self, tmp_db):
+        d = EventDedup(db_dir=tmp_db, generic_anchor_min_df=20,
+                       generic_anchor_frac=0.003)
+        try:
+            assert d._generic_df() == 20  # пустая/малая база: абсолютный пол
+            d._clusters = [{"title": ""}] * 10000
+            assert d._generic_df() == 30
+            assert "generic_anchors" in d.stats()
+        finally:
+            d.close()
 
 
 class TestBlueOriginFragmentation:
