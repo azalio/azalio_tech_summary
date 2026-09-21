@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import os
+import re
 import sys
 import json
 from datetime import datetime, timezone
@@ -311,6 +312,10 @@ def clear_pending_intel(path=None):
     except OSError as e:
         print(f"clear_pending_intel: error {path}: {e}")
 
+def extract_urls(summary):
+    """Ссылки из markdown-выпуска: [Издание](URL)."""
+    return re.findall(r"\]\((https?://[^)\s]+)\)", summary or "")
+
 def is_empty_digest(summary):
     """True if the editor signalled a genuinely quiet hour (the no-news sentinel)
     rather than a real digest. Tolerant of minor LLM wording/punctuation drift,
@@ -389,6 +394,10 @@ def main():
         ttl_hours=168,
         matching_ttl_hours=72,
         max_cluster_size=50,
+        # Серый пересказ неопубликованного кластера идёт к редактору, а не в
+        # корзину (dedup.py): режем только повторы опубликованного и
+        # почти-идентичные перепечатки.
+        passthrough_unreported=True,
         dry_run=False,
     )
     collectors = Collectors(workspace, dedup=dedup)
@@ -450,7 +459,7 @@ def main():
 
     # Log dedup stats
     stats = dedup.stats()
-    print(f"[DEDUP] Checked: {stats['checked']} | Duplicates: {stats['duplicates']} | Clusters: {stats['total_clusters']} | Items: {stats['total_items']} | Generic anchors: {stats['generic_anchors']}")
+    print(f"[DEDUP] Checked: {stats['checked']} | Duplicates: {stats['duplicates']} | Passthrough: {stats['passthrough']} | Clusters: {stats['total_clusters']} | Items: {stats['total_items']} | Generic anchors: {stats['generic_anchors']}")
     signals = dedup.event_signals()
     event_signals = format_event_signals(signals)
     # NB: dedup is left open until after the post so mark_reported() can flag the
@@ -579,9 +588,11 @@ def main():
             collectors.commit_seen()
             save_summary(summary)
             clear_pending_intel()
-            # Story published — don't re-surface these clusters as fresh bursts
-            # on later runs (the "same news for days" repost).
-            dedup.mark_reported([s["cluster_id"] for s in signals])
+            # Опубликовано — помечаем кластеры ссылок из выпуска: их серые
+            # пересказы дальше режутся, а бурсты не всплывают заново. Раньше
+            # помечались все кластеры из event_signals, даже не попавшие в
+            # выпуск, — и «reported» не значило «опубликовано».
+            dedup.mark_reported(dedup.clusters_for_urls(extract_urls(summary)))
         else:
             print("send_tg failed — leaving URL marks uncommitted for retry")
             save_pending_intel(all_intelligence_data)

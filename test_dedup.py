@@ -463,14 +463,16 @@ class TestGenericAnchors:
         косинусом к e1 (серая зона), чтобы решал только якорный гейт."""
         from dedup import EMBEDDING_DIM
         e1 = np.zeros(EMBEDDING_DIM, dtype=np.float32); e1[0] = 1.0
-        e2 = np.zeros(EMBEDDING_DIM, dtype=np.float32); e2[1] = 1.0
-        seen = []
+        calls = []
 
         def enc(text):
-            if not seen:
-                seen.append(text)
+            calls.append(text)
+            if len(calls) == 1:
                 return e1
-            return (cosine * e1 + math.sqrt(1 - cosine ** 2) * e2).astype(np.float32)
+            # Каждому следующему тексту — своя ортогональная компонента, иначе
+            # два одинаковых вектора сдвинут центроид и дадут авто-матч ≥ 0.92.
+            ek = np.zeros(EMBEDDING_DIM, dtype=np.float32); ek[len(calls)] = 1.0
+            return (cosine * e1 + math.sqrt(1 - cosine ** 2) * ek).astype(np.float32)
 
         dedup._encode = enc
 
@@ -510,6 +512,22 @@ class TestGenericAnchors:
         assert "open" not in cluster["anchors"]
         assert "source" not in cluster["anchors"]
 
+    def test_accumulated_anchor_alone_cannot_bridge(self, dedup):
+        """Прод: кластер «Stripe's wallet embraces AI bots» накопил jev из
+        чужого пункта и ловил пост про Laya на одном этом якоре (0.90/0.50).
+        Совпадение обязано задеть собственный заголовок кластера."""
+        self._stub_encode(dedup, 0.85)
+        assert dedup.check_and_add(
+            "Stripe wallet embraces AI bots", "RSS:PaymentsDive", "http://d1") is True
+        # Законный дубль (делит stripe/wallet с заголовком) — приносит jev.
+        assert dedup.check_and_add(
+            "Jev agents can now pay through the Stripe wallet", "HN", "http://d2") is False
+        assert "jev" in dedup._clusters[0]["anchors"]
+        # Делит с кластером только накопленный jev → не дубль.
+        assert dedup.check_and_add(
+            "Laya: local alternative to Jev", "Telegram:@x", "http://d3") is True
+        assert dedup.stats()["total_clusters"] == 2
+
     def test_generic_threshold_has_floor_and_scales(self, tmp_db):
         d = EventDedup(db_dir=tmp_db, generic_anchor_min_df=20,
                        generic_anchor_frac=0.003)
@@ -520,6 +538,67 @@ class TestGenericAnchors:
             assert "generic_anchors" in d.stats()
         finally:
             d.close()
+
+
+class TestPassthroughUnreported:
+    """Прод (21.09.2026): пост про Laya и пост про коллекцию Jev-проектов
+    резались как серые дубли твитов про Jev трёхдневной давности, которые
+    редактор ни разу не публиковал. Из 23 серых «дублей» за два запуска
+    настоящих было 2. Контракт passthrough_unreported=True: серый пересказ
+    НЕопубликованного кластера идёт к редактору (кластер пополняется), серый
+    пересказ опубликованного и почти-идентичная перепечатка (≥ auto) режутся."""
+
+    @pytest.fixture
+    def pt(self, tmp_db):
+        d = EventDedup(db_dir=tmp_db, match_threshold=0.80, matching_ttl_hours=48,
+                       max_cluster_size=50, passthrough_unreported=True)
+        yield d
+        d.close()
+
+    def test_gray_retelling_of_unreported_cluster_passes(self, pt):
+        TestGenericAnchors._stub_encode(pt, 0.85)
+        assert pt.check_and_add("Jev is a model that makes decisions", "X:@a", "http://p1") is True
+        assert pt.check_and_add("Laya — открытая альтернатива Jev", "Telegram:@x", "http://p2") is True
+        assert pt.stats()["total_clusters"] == 1      # пересказ прикреплён к кластеру
+        assert pt.stats()["passthrough"] == 1
+        assert pt._clusters[0]["count"] == 2
+
+    def test_gray_retelling_of_reported_cluster_is_dropped(self, pt):
+        TestGenericAnchors._stub_encode(pt, 0.85)
+        pt.check_and_add("Jev is a model that makes decisions", "X:@a", "http://p1")
+        # Выпуск опубликован со ссылкой на этот пункт → кластер reported.
+        pt.mark_reported(pt.clusters_for_urls(["http://p1"]))
+        assert pt.check_and_add("Laya — открытая альтернатива Jev", "Telegram:@x", "http://p2") is False
+
+    def test_near_identical_still_dropped_even_if_unreported(self, pt):
+        TestGenericAnchors._stub_encode(pt, 0.95)   # ≥ auto_match_threshold
+        assert pt.check_and_add("Jev is a model that makes decisions", "X:@a", "http://p1") is True
+        assert pt.check_and_add("Jev is a model that makes decisions.", "RSS:mirror", "http://p2") is False
+        assert pt.stats()["passthrough"] == 0
+
+    def test_clusters_for_urls_covers_new_dup_and_passthrough(self, pt):
+        TestGenericAnchors._stub_encode(pt, 0.85)
+        pt.check_and_add("Jev is a model that makes decisions", "X:@a", "http://p1")
+        pt.check_and_add("Laya — открытая альтернатива Jev", "Telegram:@x", "http://p2/")
+        cid = pt._clusters[0]["id"]
+        assert pt.clusters_for_urls(["http://p1", "HTTP://p2", "http://unknown"]) == [cid]
+
+    def test_default_contract_unchanged(self, dedup):
+        """Без флага серый дубль режется как раньше (тесты выше опираются на это)."""
+        TestGenericAnchors._stub_encode(dedup, 0.85)
+        dedup.check_and_add("Jev is a model that makes decisions", "X:@a", "http://q1")
+        assert dedup.check_and_add("Laya — открытая альтернатива Jev", "Telegram:@x", "http://q2") is False
+
+
+class TestExtractUrls:
+    def test_pulls_markdown_links_only(self):
+        from main import extract_urls
+        summary = ("• 🆕 **Laya** … [Telegram:@vibecoding_tg](https://t.me/vibecoding_tg/3902)\n"
+                   "↳ Строка без ссылки https://example.com/plain\n"
+                   "• 🔬 X [arXiv](https://arxiv.org/abs/2609.12923)")
+        assert extract_urls(summary) == ["https://t.me/vibecoding_tg/3902",
+                                         "https://arxiv.org/abs/2609.12923"]
+        assert extract_urls("") == []
 
 
 class TestBlueOriginFragmentation:

@@ -184,6 +184,10 @@ def jaccard_similarity(set_a: set, set_b: set) -> float:
     return len(intersection) / len(union) if union else 0.0
 
 
+def _norm_url(url: str) -> str:
+    return (url or "").strip().rstrip("/").lower()
+
+
 def overlap_coefficient(set_a: set, set_b: set) -> float:
     """|A ∩ B| / min(|A|, |B|). Robust when one headline is a short subset of
     the other (Jaccard would understate that; overlap doesn't)."""
@@ -293,6 +297,7 @@ class EventDedup:
         min_lexical_tokens: int = 5,
         generic_anchor_min_df: int = 20,
         generic_anchor_frac: float = 0.003,
+        passthrough_unreported: bool = False,
         dry_run: bool = False,
     ):
         self.gray_zone_min = gray_zone_min if gray_zone_min is not None else match_threshold
@@ -322,6 +327,14 @@ class EventDedup:
         # кластеров, не считается ни при сравнении, ни при накоплении.
         self.generic_anchor_min_df = generic_anchor_min_df
         self.generic_anchor_frac = generic_anchor_frac
+        # Пересказ (серая зона, не авто-матч) кластера, который ещё НЕ был
+        # опубликован, не выбрасывается, а пропускается к редактору — кластер при
+        # этом пополняется как обычно. Замер на проде (21.09.2026): из 23 серых
+        # «дублей» за два запуска настоящих было 2, остальные — разные события с
+        # общим именем (minimax, xiaomi, iphone, nas, test-time). Дедуп бережёт
+        # канал от повторов, а не редактора от похожего — повтор возможен только
+        # для опубликованного кластера, его серые пересказы режутся по-прежнему.
+        self.passthrough_unreported = passthrough_unreported
         self.dry_run = dry_run
 
         os.makedirs(db_dir, exist_ok=True)
@@ -337,9 +350,13 @@ class EventDedup:
         self._anchor_df: Counter = Counter()
         for c in self._clusters:
             self._anchor_df.update(extract_anchors(c["title"] or ""))
-        self._stats = {"checked": 0, "duplicates": 0, "added": 0, "lexical_skips": 0}
+        self._stats = {"checked": 0, "duplicates": 0, "added": 0, "lexical_skips": 0,
+                       "passthrough": 0}
         self._run_cluster_hits = {}
         self._run_cluster_sources = {}
+        # url → cluster_id для всех проверенных за запуск пунктов: по ссылкам в
+        # опубликованном выпуске помечаем кластеры как reported (см. main.py).
+        self._run_url_cluster = {}
 
     # ── DB schema ────────────────────────────────────────────────────
 
@@ -445,6 +462,7 @@ class EventDedup:
                 "first_seen": first_seen,
                 "count": count,
                 "title": title,
+                "title_anchors": extract_anchors(title or ""),
                 "reported": reported_at is not None,
             })
         return clusters
@@ -490,6 +508,7 @@ class EventDedup:
             "last_seen": ts,
             "count": 1,
             "title": title,
+            "title_anchors": set(anchors),
             "reported": False,
         }
         self._clusters.append(cluster)
@@ -583,16 +602,21 @@ class EventDedup:
             overlap = overlap_coefficient(item_specific,
                                           self._specific(cluster["anchors"]))
             conflict = number_conflict(numbers, cluster["numbers"])
+            # Накопленные якоря могут расширить пересечение, но не создать его:
+            # якорное совпадение обязано задеть собственный заголовок кластера.
+            # Иначе один проглоченный чужой пункт (jev в кластере про Stripe)
+            # ловит все следующие новости с тем же именем.
+            identity = bool(item_specific & self._specific(cluster["title_anchors"]))
 
             # A year/version conflict downgrades even high-confidence embedding
             # matches to "needs strong anchor agreement" — blocks two distinct
             # events about the same actor from collapsing together.
             if conflict:
-                is_match = overlap >= self.anchor_overlap_conflict
+                is_match = identity and overlap >= self.anchor_overlap_conflict
             elif emb_sim >= self.auto_match_threshold:
                 is_match = True
             else:
-                is_match = overlap >= self.anchor_overlap_min
+                is_match = identity and overlap >= self.anchor_overlap_min
 
             if is_match and emb_sim > best_emb_sim:
                 best_emb_sim = emb_sim
@@ -679,6 +703,7 @@ class EventDedup:
             )
             self._absorb_lexical(lexical, anchors, numbers, ts)
             self._mark_touched(lexical, source)
+            self._run_url_cluster[_norm_url(url)] = lexical["id"]
             if self.dry_run:
                 return True
             return False
@@ -698,8 +723,17 @@ class EventDedup:
             )
             self._add_to_cluster(cluster, vec, anchors, numbers, ts)
             self._mark_touched(cluster, source)
+            self._run_url_cluster[_norm_url(url)] = cluster["id"]
 
             if self.dry_run:
+                return True
+            if (self.passthrough_unreported and not cluster["reported"]
+                    and emb_sim < self.auto_match_threshold):
+                self._stats["passthrough"] += 1
+                logger.info(
+                    "RETELLING passed to editor (cluster #%d unreported): [%s] %r",
+                    cluster["id"], source, title[:80],
+                )
                 return True
             return False
 
@@ -707,8 +741,19 @@ class EventDedup:
         cluster = self._create_cluster(title, vec, tokens, anchors, numbers, ts)
         self._save_item(cluster["id"], title, source, url, vec, tokens, ts)
         self._mark_touched(cluster, source)
+        self._run_url_cluster[_norm_url(url)] = cluster["id"]
         self._stats["added"] += 1
         return True
+
+    def clusters_for_urls(self, urls) -> list:
+        """cluster_id для ссылок, проверенных в этом запуске (для mark_reported
+        по ссылкам опубликованного выпуска). Неизвестные ссылки пропускаются."""
+        ids = []
+        for u in urls or ():
+            cid = self._run_url_cluster.get(_norm_url(u))
+            if cid is not None and cid not in ids:
+                ids.append(cid)
+        return ids
 
     def event_signals(self, min_observations: int = 2, max_events: int = 12) -> list:
         """Return source-burst signals from clusters touched in this process.

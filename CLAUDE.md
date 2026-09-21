@@ -85,7 +85,19 @@ frequency across loaded clusters is ≥ `max(generic_anchor_min_df=20,
 generic_anchor_frac=0.003·N)` is dropped from both the overlap comparison and
 from accumulation. Every DUPLICATE / LEXICAL DUPLICATE decision (emb, overlap,
 matched cluster) is logged to `main.log`; `[DEDUP] … Generic anchors: N` shows
-how many anchors are currently demoted.
+how many anchors are currently demoted. A gray-zone match must also share a
+specific anchor with the cluster's **own headline** (accumulated anchors can
+widen an overlap, never create one).
+
+**Gray-zone retellings of unpublished clusters are passed to the editor**
+(`passthrough_unreported=True` in `main.py`; measured Sep 2026: 2 of 23 gray
+"duplicates" were real). The item is still attached to the cluster (burst
+signals work), but only near-identical items (`emb>=0.92` / lexical) and gray
+retellings of **reported** clusters are dropped. `reported` now means
+*published*: after a successful post `main.py` marks the clusters of the URLs
+found in the digest (`clusters_for_urls`), not every `event_signals` cluster.
+`[DEDUP] … Passthrough: N` counts pass-throughs; `RETELLING passed to editor`
+lines in `main.log` name the cluster.
 
 ## Ranking, source-health & eval
 
