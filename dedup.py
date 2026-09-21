@@ -516,10 +516,14 @@ class EventDedup:
         return cluster
 
     def _add_to_cluster(self, cluster: dict, vec: np.ndarray,
-                        anchors: set, numbers: dict, ts: float):
+                        anchors: set, numbers: dict, ts: float,
+                        blend: bool = True):
         # Running-mean centroid, frozen once the cluster is well-established to
-        # stop slow topic drift on long-lived clusters.
-        if cluster["count"] < self.centroid_update_limit:
+        # stop slow topic drift on long-lived clusters. Пропущенный к редактору
+        # пересказ (blend=False) центроид не двигает: на проде русский пересказ
+        # (Laya) сдвинул центроид EN-твита про Jev так, что следующий русский
+        # пост про Jev стал «идентичным» (0.92) и был срезан вместо пропуска.
+        if blend and cluster["count"] < self.centroid_update_limit:
             n = cluster["count"]
             blended = cluster["centroid"] * n + vec
             norm = float(np.linalg.norm(blended))
@@ -721,14 +725,16 @@ class EventDedup:
                 emb_sim, overlap, source, title[:80],
                 cluster["id"], cluster["title"][:80],
             )
-            self._add_to_cluster(cluster, vec, anchors, numbers, ts)
+            passthrough = (self.passthrough_unreported and not cluster["reported"]
+                           and emb_sim < self.auto_match_threshold)
+            self._add_to_cluster(cluster, vec, anchors, numbers, ts,
+                                 blend=not passthrough)
             self._mark_touched(cluster, source)
             self._run_url_cluster[_norm_url(url)] = cluster["id"]
 
             if self.dry_run:
                 return True
-            if (self.passthrough_unreported and not cluster["reported"]
-                    and emb_sim < self.auto_match_threshold):
+            if passthrough:
                 self._stats["passthrough"] += 1
                 logger.info(
                     "RETELLING passed to editor (cluster #%d unreported): [%s] %r",

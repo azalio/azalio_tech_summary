@@ -583,6 +583,16 @@ class TestPassthroughUnreported:
         cid = pt._clusters[0]["id"]
         assert pt.clusters_for_urls(["http://p1", "HTTP://p2", "http://unknown"]) == [cid]
 
+    def test_passthrough_does_not_move_centroid(self, pt):
+        """Прод: пересказ Laya (RU) сдвинул центроид EN-твита про Jev, и
+        следующий RU-пост про Jev стал авто-дублем (0.92) вместо пропуска."""
+        TestGenericAnchors._stub_encode(pt, 0.85)
+        pt.check_and_add("Jev is a model that makes decisions", "X:@a", "http://p1")
+        before = pt._clusters[0]["centroid"].copy()
+        assert pt.check_and_add("Laya — открытая альтернатива Jev", "Telegram:@x", "http://p2") is True
+        assert np.allclose(pt._clusters[0]["centroid"], before)
+        assert pt._clusters[0]["count"] == 2          # но к кластеру прикреплён
+
     def test_default_contract_unchanged(self, dedup):
         """Без флага серый дубль режется как раньше (тесты выше опираются на это)."""
         TestGenericAnchors._stub_encode(dedup, 0.85)
