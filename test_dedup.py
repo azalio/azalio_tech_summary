@@ -1055,6 +1055,16 @@ class TestRadarPrompt:
         # Запрет хвостов остался, но теперь про сам факт, а не про ↳ строку.
         assert "внутри самого буллета" in VIBE_PROMPT
 
+    def test_prompt_pins_attribution(self):
+        """Выпуск 21.09 20:20: «TypeSafe выпустила Jev — среду выполнения…» при
+        источнике «We built a new harness using @typesafeai's Jev». Упомянутая
+        технология стала автором и предметом новости, класс продукта сменился."""
+        from main import VIBE_PROMPT
+
+        assert "КТО ЧТО СДЕЛАЛ — ровно как в источнике" in VIBE_PROMPT
+        assert "модель ≠ среда выполнения ≠ обвязка" in VIBE_PROMPT
+        assert "⛔ «TypeSafe выпустила Jev" in VIBE_PROMPT
+
     def test_prompt_no_news_sentinel_matches_main(self):
         """Строка-пустышка в промпте обязана совпадать с маркером, по которому
         main.py гасит постинг, иначе тихий час уедет в канал как текст."""
