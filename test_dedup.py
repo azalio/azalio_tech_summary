@@ -9,6 +9,7 @@ import time
 import tempfile
 from datetime import datetime, timedelta, timezone
 
+import json
 import pytest
 import math
 import numpy as np
@@ -1065,6 +1066,16 @@ class TestRadarPrompt:
         assert "модель ≠ среда выполнения ≠ обвязка" in VIBE_PROMPT
         assert "⛔ «TypeSafe выпустила Jev" in VIBE_PROMPT
 
+    def test_prompt_dedups_against_72h_and_grounds_facts(self):
+        """23.09: agentrun, ZCode, Opus 5.5 вышли повторно через 1–2 дня (редактор
+        видел только последний выпуск), а в 10:20 цифры agentrun ушли под ссылку
+        на кандидата, у которого был только заголовок."""
+        from main import VIBE_PROMPT
+
+        assert "<опубликовано_за_72ч>" in VIBE_PROMPT
+        assert "Новая ссылка, другой источник или другой язык на ту же историю — не новый факт" in VIBE_PROMPT
+        assert "Факты пункта берутся ТОЛЬКО из кандидата по этой ссылке" in VIBE_PROMPT
+
     def test_prompt_no_news_sentinel_matches_main(self):
         """Строка-пустышка в промпте обязана совпадать с маркером, по которому
         main.py гасит постинг, иначе тихий час уедет в канал как текст."""
@@ -1081,7 +1092,7 @@ class TestRadarPrompt:
     def test_prompt_keeps_placeholders(self):
         from main import VIBE_PROMPT
 
-        for ph in ("{last_summary}", "{event_signals}",
+        for ph in ("{last_summary}", "{recent_published}", "{event_signals}",
                    "{priority_index}", "{all_intelligence_data}"):
             assert ph in VIBE_PROMPT, ph
 
@@ -1433,3 +1444,46 @@ class TestPendingIntel:
         save_pending_intel("fresh news", path=path)
         loaded = load_pending_intel(path=path)
         assert "fresh news" in loaded
+
+
+class TestRecentPublished:
+    def _write(self, tmp_path, recs):
+        p = tmp_path / "runs.jsonl"
+        p.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in recs) + "\nnot json\n")
+        return str(p)
+
+    def test_window_order_and_filters(self, tmp_path):
+        from datetime import datetime, timezone
+        from main import load_recent_published
+        now = datetime(2026, 9, 23, 10, 0, tzinfo=timezone.utc)
+        path = self._write(tmp_path, [
+            {"ts": "2026-09-19T10:00:00+00:00", "summary": "• старое [A](https://a)"},
+            {"ts": "2026-09-21T20:20:00+00:00", "summary": "• 🆕 agentrun [X](https://x)\n↳ следствие"},
+            {"ts": "2026-09-23T01:19:00+00:00", "summary": "За последний час значимых новостей не зафиксировано."},
+            {"ts": "2026-09-23T08:20:00+00:00", "summary": "• 🆕 ZCode [P](https://p)\n\n• 🔮 Opus 5.5 [T](https://t)"},
+        ])
+        out = load_recent_published(path, now=now).splitlines()
+        assert out == ["[23.09 08:20] 🔮 Opus 5.5 [T](https://t)",
+                       "[23.09 08:20] 🆕 ZCode [P](https://p)",
+                       "[21.09 20:20] 🆕 agentrun [X](https://x)"]
+
+    def test_cap_keeps_newest_and_missing_file(self, tmp_path):
+        from datetime import datetime, timezone
+        from main import load_recent_published
+        now = datetime(2026, 9, 23, 10, 0, tzinfo=timezone.utc)
+        path = self._write(tmp_path, [
+            {"ts": "2026-09-23T07:00:00+00:00", "summary": "• " + "o" * 50},
+            {"ts": "2026-09-23T08:00:00+00:00", "summary": "• " + "n" * 50},
+        ])
+        out = load_recent_published(path, max_chars=80, now=now)
+        assert "nnnn" in out and "oooo" not in out
+        assert load_recent_published(str(tmp_path / "nope.jsonl"), now=now) == "Нет данных."
+
+    def test_long_item_truncated_but_keeps_link(self, tmp_path):
+        from datetime import datetime, timezone
+        from main import load_recent_published
+        now = datetime(2026, 9, 23, 10, 0, tzinfo=timezone.utc)
+        path = self._write(tmp_path, [
+            {"ts": "2026-09-23T08:00:00+00:00", "summary": "• " + "x" * 400 + " [Src](https://src/1)"}])
+        out = load_recent_published(path, item_chars=50, now=now)
+        assert out.endswith("… [Src](https://src/1)") and len(out) < 120

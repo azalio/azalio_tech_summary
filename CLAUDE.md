@@ -113,6 +113,16 @@ lines in `main.log` name the cluster.
   ("will azalio act on it this week / retell it to a colleague?") is mandatory
   for every item, at most **one 🔬 per issue**, and an arXiv/HF paper without
   released code or a model may only appear as 🔬, never 🆕.
+- **Editor-level dedup over 72h** (same prompt): besides `<предыдущий_отчёт>`
+  the editor gets `<опубликовано_за_72ч>` — every bullet actually posted in the
+  last 72h, built from `digest_runs.jsonl` by `load_recent_published()` (newest
+  first, ↳ lines dropped, each item cut to 220 chars + its link, ~20 KB for
+  the full window, hard cap 30 KB). Event dedup can't catch a story
+  whose clusters fragmented or aged out of the 72h window (Sep 2026: agentrun,
+  ZCode, Opus 5.5 re-posted 1–2 days later). A new link / source / language on
+  a posted story is not a new fact; a repeat needs ⬆️ and only new facts.
+  Facts of an item must come from the candidate at its own link — never carried
+  over from earlier issues.
 - **Voice** (same prompt): each item may carry one optional `↳ ` line after
   the link (≤15 words, a concrete *consequence* for the reader stated as a
   fact — never advice or an imperative like «попробуй»/«добавь»/«обнови»;

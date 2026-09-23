@@ -77,7 +77,8 @@ VIBE_PROMPT = """Ты — high-signal радар канала @azalio_tech_summa
 • Скепсис передавай КОМПАКТНО внутри факта («по словам…», «по неподтверждённым данным…», «слух:»), а НЕ отдельным назидательным предложением в конце.
 
 ДЕДУПЛИКАЦИЯ:
-• Не включай пункт, если заголовок или суть совпадает с <предыдущий_отчёт> и новых фактов (цифр, заявлений, решений) не появилось.
+• Не включай пункт, если заголовок или суть совпадает с <предыдущий_отчёт> или с любым пунктом из <опубликовано_за_72ч> и новых фактов (цифр, заявлений, решений) не появилось. Новая ссылка, другой источник или другой язык на ту же историю — не новый факт.
+• Повторно о событии из <опубликовано_за_72ч> — только с меткой ⬆️ и только новыми фактами; уже опубликованное не пересказывай.
 • Одно событие в нескольких каналах — объедини в один пункт по наиболее надёжному первоисточнику.
 • Появились новые факты по старой теме — включай с пометкой ⬆️.
 
@@ -93,6 +94,10 @@ VIBE_PROMPT = """Ты — high-signal радар канала @azalio_tech_summa
 <предыдущий_отчёт>
 {last_summary}
 </предыдущий_отчёт>
+
+<опубликовано_за_72ч>
+{recent_published}
+</опубликовано_за_72ч>
 
 <event_signals>
 {event_signals}
@@ -155,6 +160,8 @@ VIBE_PROMPT = """Ты — high-signal радар канала @azalio_tech_summa
 
 ✅ ОБЯЗАТЕЛЬНО:
 • Каждый факт — со ссылкой из НОВЫХ ДАННЫХ.
+• Факты пункта берутся ТОЛЬКО из кандидата по этой ссылке в <новые_данные>. <предыдущий_отчёт> и <опубликовано_за_72ч> — справка для дедупликации, а не источник фактов: переносить оттуда цифры и формулировки под новую ссылку запрещено. У кандидата только заголовок — пиши только то, что сказано в заголовке, или выбрось пункт.
+  ⛔ Кандидат «Jev in 25 Lines of Python» (только заголовок), а в пункте — цифры agentrun из прошлого выпуска.
 • КТО ЧТО СДЕЛАЛ — ровно как в источнике. «We built X using @vendor's Y» — это новость про X от автора поста; Y — использованная технология, а не автор и не предмет новости. Не превращай упомянутый продукт в «выпущенный» и не меняй его класс: модель ≠ среда выполнения ≠ обвязка (harness) ≠ плагин. Субъект неясен — «по словам автора» без имени компании.
   ⛔ «TypeSafe выпустила Jev — среду выполнения, которая переносит шаги агента из LLM-вызовов в код» (источник: «We built a new harness using @typesafeai's Jev… with agentrun()»).
   ✅ «Команда AJ Asver собрала обвязку agentrun на модели Jev от TypeSafe: повторяющиеся шаги агента переносятся из LLM-вызовов в код; 100 000 проверок подешевели с $290 000 на Opus 5 до $26 000, по замерам авторов.»
@@ -332,6 +339,45 @@ def is_empty_digest(summary):
     # mention the phrase, with the length cap as a final backstop.
     has_content = "•" in summary or "](" in summary
     return not has_content and len(norm) < 200
+
+def load_recent_published(path=None, hours=72, max_chars=30000, item_chars=220, now=None):
+    """Пункты, реально ушедшие в канал за последние `hours` часов (из
+    digest_runs.jsonl), новые первыми. Редактор видел только последний выпуск,
+    а событийный дедуп не ловит историю, чьи кластеры раздробились или вышли из
+    72-часового окна: agentrun, ZCode, Opus 5.5 выходили повторно через 1–2
+    дня. Строки «↳» и пустышки отброшены. Пункт режется до `item_chars` (для
+    дедупа хватает сути и ссылки): полные 72 часа — около 100 пунктов, ~20 КБ.
+    При превышении `max_chars` обрезается старое. Best-effort."""
+    path = path or DIGEST_LOG_PATH
+    now = now or datetime.now(timezone.utc)
+    items = []
+    try:
+        with open(path, encoding="utf-8") as fh:
+            for line in fh:
+                try:
+                    rec = json.loads(line)
+                    ts = datetime.fromisoformat(rec["ts"])
+                except (ValueError, KeyError, TypeError):
+                    continue
+                if (now - ts).total_seconds() > hours * 3600 or is_empty_digest(rec.get("summary", "")):
+                    continue
+                stamp = ts.strftime("%d.%m %H:%M")
+                for b in rec.get("summary", "").splitlines():
+                    if b.startswith("•"):
+                        text = b[1:].strip()
+                        if len(text) > item_chars:
+                            links = re.findall(r"\[[^\]]+\]\(https?://[^)\s]+\)", text)
+                            text = text[:item_chars].rstrip() + "…" + (" " + links[-1] if links else "")
+                        items.append(f"[{stamp}] {text}")
+    except OSError:
+        return "Нет данных."
+    out, size = [], 0
+    for it in reversed(items):
+        if size + len(it) > max_chars:
+            break
+        out.append(it)
+        size += len(it) + 1
+    return "\n".join(out) or "Нет данных."
 
 def log_digest_run(intelligence, event_signals, summary):
     """Append one JSON record of this run's editor input/output for later review.
@@ -528,6 +574,7 @@ def main():
 
         prompt = VIBE_PROMPT.format(
             last_summary=last_summary,
+            recent_published=load_recent_published(),
             event_signals=event_signals,
             priority_index=priority_index,
             all_intelligence_data=all_intelligence_data,
