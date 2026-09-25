@@ -297,7 +297,7 @@ class EventDedup:
         min_lexical_tokens: int = 5,
         generic_anchor_min_df: int = 20,
         generic_anchor_frac: float = 0.003,
-        passthrough_unreported: bool = False,
+        passthrough_gray: bool = False,
         dry_run: bool = False,
     ):
         self.gray_zone_min = gray_zone_min if gray_zone_min is not None else match_threshold
@@ -327,14 +327,15 @@ class EventDedup:
         # кластеров, не считается ни при сравнении, ни при накоплении.
         self.generic_anchor_min_df = generic_anchor_min_df
         self.generic_anchor_frac = generic_anchor_frac
-        # Пересказ (серая зона, не авто-матч) кластера, который ещё НЕ был
-        # опубликован, не выбрасывается, а пропускается к редактору — кластер при
-        # этом пополняется как обычно. Замер на проде (21.09.2026): из 23 серых
-        # «дублей» за два запуска настоящих было 2, остальные — разные события с
-        # общим именем (minimax, xiaomi, iphone, nas, test-time). Дедуп бережёт
-        # канал от повторов, а не редактора от похожего — повтор возможен только
-        # для опубликованного кластера, его серые пересказы режутся по-прежнему.
-        self.passthrough_unreported = passthrough_unreported
+        # Пересказ (серая зона, не авто-матч) не выбрасывается, а пропускается к
+        # редактору — кластер при этом пополняется. Замер на проде (21.09.2026):
+        # из 23 серых «дублей» за два запуска настоящих было 2. Сначала пропускали
+        # только пересказы НЕопубликованных кластеров, но 25.09 серый матч на
+        # опубликованный твит @ClaudeDevs «…your Pro or Max plan…» (0.83, общие
+        # pro/max/plan) срезал утечку про ChatGPT Pro Max за $500. Повторы теперь
+        # ловит редактор: у него список всего опубликованного за 72 часа
+        # (<опубликовано_за_72ч> в main.py). Дедуп режет только почти-идентичное.
+        self.passthrough_gray = passthrough_gray
         self.dry_run = dry_run
 
         os.makedirs(db_dir, exist_ok=True)
@@ -519,10 +520,12 @@ class EventDedup:
                         anchors: set, numbers: dict, ts: float,
                         blend: bool = True):
         # Running-mean centroid, frozen once the cluster is well-established to
-        # stop slow topic drift on long-lived clusters. Пропущенный к редактору
-        # пересказ (blend=False) центроид не двигает: на проде русский пересказ
-        # (Laya) сдвинул центроид EN-твита про Jev так, что следующий русский
-        # пост про Jev стал «идентичным» (0.92) и был срезан вместо пропуска.
+        # stop slow topic drift on long-lived clusters. Смешивают центроид только
+        # почти-идентичные пункты (≥ auto); серый матч (blend=False) — нет.
+        # Иначе центроид уезжает к пересказам, и следующий пост становится
+        # «идентичным» без проверки якорей: 21.09 так срезали пост про Jev
+        # (0.92), 25.09 — три поста про ChatGPT Pro Max (0.80–0.82 к исходному
+        # твиту, 0.91–0.95 к уехавшему центроиду).
         if blend and cluster["count"] < self.centroid_update_limit:
             n = cluster["count"]
             blended = cluster["centroid"] * n + vec
@@ -725,10 +728,9 @@ class EventDedup:
                 emb_sim, overlap, source, title[:80],
                 cluster["id"], cluster["title"][:80],
             )
-            passthrough = (self.passthrough_unreported and not cluster["reported"]
-                           and emb_sim < self.auto_match_threshold)
-            self._add_to_cluster(cluster, vec, anchors, numbers, ts,
-                                 blend=not passthrough)
+            gray = emb_sim < self.auto_match_threshold
+            passthrough = self.passthrough_gray and gray
+            self._add_to_cluster(cluster, vec, anchors, numbers, ts, blend=not gray)
             self._mark_touched(cluster, source)
             self._run_url_cluster[_norm_url(url)] = cluster["id"]
 
@@ -737,8 +739,8 @@ class EventDedup:
             if passthrough:
                 self._stats["passthrough"] += 1
                 logger.info(
-                    "RETELLING passed to editor (cluster #%d unreported): [%s] %r",
-                    cluster["id"], source, title[:80],
+                    "RETELLING passed to editor (cluster #%d, reported=%s): [%s] %r",
+                    cluster["id"], cluster["reported"], source, title[:80],
                 )
                 return True
             return False

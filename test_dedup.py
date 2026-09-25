@@ -541,18 +541,18 @@ class TestGenericAnchors:
             d.close()
 
 
-class TestPassthroughUnreported:
+class TestPassthroughGray:
     """Прод (21.09.2026): пост про Laya и пост про коллекцию Jev-проектов
-    резались как серые дубли твитов про Jev трёхдневной давности, которые
-    редактор ни разу не публиковал. Из 23 серых «дублей» за два запуска
-    настоящих было 2. Контракт passthrough_unreported=True: серый пересказ
-    НЕопубликованного кластера идёт к редактору (кластер пополняется), серый
-    пересказ опубликованного и почти-идентичная перепечатка (≥ auto) режутся."""
+    резались как серые дубли твитов про Jev. Из 23 серых «дублей» настоящих
+    было 2. 25.09: серый матч на ОПУБЛИКОВАННЫЙ твит «…Pro or Max plan…» срезал
+    утечку про ChatGPT Pro Max. Контракт passthrough_gray=True: любой серый
+    пересказ идёт к редактору (кластер пополняется, центроид не двигается);
+    режется только почти-идентичное (≥ auto). Повторы ловит редактор по 72ч."""
 
     @pytest.fixture
     def pt(self, tmp_db):
         d = EventDedup(db_dir=tmp_db, match_threshold=0.80, matching_ttl_hours=48,
-                       max_cluster_size=50, passthrough_unreported=True)
+                       max_cluster_size=50, passthrough_gray=True)
         yield d
         d.close()
 
@@ -564,12 +564,12 @@ class TestPassthroughUnreported:
         assert pt.stats()["passthrough"] == 1
         assert pt._clusters[0]["count"] == 2
 
-    def test_gray_retelling_of_reported_cluster_is_dropped(self, pt):
+    def test_gray_retelling_of_reported_cluster_also_passes(self, pt):
         TestGenericAnchors._stub_encode(pt, 0.85)
         pt.check_and_add("Jev is a model that makes decisions", "X:@a", "http://p1")
         # Выпуск опубликован со ссылкой на этот пункт → кластер reported.
         pt.mark_reported(pt.clusters_for_urls(["http://p1"]))
-        assert pt.check_and_add("Laya — открытая альтернатива Jev", "Telegram:@x", "http://p2") is False
+        assert pt.check_and_add("Laya — открытая альтернатива Jev", "Telegram:@x", "http://p2") is True
 
     def test_near_identical_still_dropped_even_if_unreported(self, pt):
         TestGenericAnchors._stub_encode(pt, 0.95)   # ≥ auto_match_threshold
@@ -593,6 +593,22 @@ class TestPassthroughUnreported:
         assert pt.check_and_add("Laya — открытая альтернатива Jev", "Telegram:@x", "http://p2") is True
         assert np.allclose(pt._clusters[0]["centroid"], before)
         assert pt._clusters[0]["count"] == 2          # но к кластеру прикреплён
+
+    def test_gray_match_never_moves_centroid_even_when_dropped(self, dedup):
+        """25.09: серые дубли (без пропуска) подмешивались в центроид, и три
+        следующих поста про Pro Max стали авто-дублями 0.91–0.95."""
+        TestGenericAnchors._stub_encode(dedup, 0.85)
+        dedup.check_and_add("Jev is a model that makes decisions", "X:@a", "http://q1")
+        before = dedup._clusters[0]["centroid"].copy()
+        assert dedup.check_and_add("Laya — открытая альтернатива Jev", "T:@x", "http://q2") is False
+        assert np.allclose(dedup._clusters[0]["centroid"], before)
+
+    def test_near_identical_still_blends_centroid(self, pt):
+        TestGenericAnchors._stub_encode(pt, 0.95)
+        pt.check_and_add("Jev is a model that makes decisions", "X:@a", "http://p1")
+        before = pt._clusters[0]["centroid"].copy()
+        pt.check_and_add("Jev is a model that makes decisions.", "RSS:m", "http://p2")
+        assert not np.allclose(pt._clusters[0]["centroid"], before)
 
     def test_default_contract_unchanged(self, dedup):
         """Без флага серый дубль режется как раньше (тесты выше опираются на это)."""

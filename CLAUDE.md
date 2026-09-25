@@ -89,15 +89,20 @@ how many anchors are currently demoted. A gray-zone match must also share a
 specific anchor with the cluster's **own headline** (accumulated anchors can
 widen an overlap, never create one).
 
-**Gray-zone retellings of unpublished clusters are passed to the editor**
-(`passthrough_unreported=True` in `main.py`; measured Sep 2026: 2 of 23 gray
-"duplicates" were real). The item is still attached to the cluster (burst
-signals work), but only near-identical items (`emb>=0.92` / lexical) and gray
-retellings of **reported** clusters are dropped. `reported` now means
-*published*: after a successful post `main.py` marks the clusters of the URLs
-found in the digest (`clusters_for_urls`), not every `event_signals` cluster.
-`[DEDUP] … Passthrough: N` counts pass-throughs; `RETELLING passed to editor`
-lines in `main.log` name the cluster.
+**Gray-zone retellings are passed to the editor** (`passthrough_gray=True`
+in `main.py`; measured Sep 2026: 2 of 23 gray "duplicates" were real). The item
+is still attached to the cluster (burst signals work); only near-identical
+items (`emb>=0.92` / lexical) are dropped. Repeats of published stories are
+the editor's job via `<опубликовано_за_72ч>` (a gray match on a *published*
+@ClaudeDevs "Pro or Max plan" tweet once killed the ChatGPT Pro Max leak).
+**Only near-identical matches blend the centroid**: gray matches never move
+it, otherwise the centroid drifts toward retellings and later posts
+auto-match (≥0.92) with no anchor check (Pro Max posts: 0.80 to the creator,
+0.95 to the drifted centroid). `reported` means *published*: after a
+successful post `main.py` marks the clusters of the URLs found in the digest
+(`clusters_for_urls`); it only gates `event_signals` now. `[DEDUP] …
+Passthrough: N` counts pass-throughs; `RETELLING passed to editor` lines in
+`main.log` name the cluster.
 
 ## Ranking, source-health & eval
 

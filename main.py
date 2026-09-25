@@ -443,10 +443,10 @@ def main():
         ttl_hours=168,
         matching_ttl_hours=72,
         max_cluster_size=50,
-        # Серый пересказ неопубликованного кластера идёт к редактору, а не в
-        # корзину (dedup.py): режем только повторы опубликованного и
-        # почти-идентичные перепечатки.
-        passthrough_unreported=True,
+        # Серый пересказ идёт к редактору, а не в корзину (dedup.py): дедуп режет
+        # только почти-идентичное, повторы опубликованного ловит редактор по
+        # <опубликовано_за_72ч>.
+        passthrough_gray=True,
         dry_run=False,
     )
     collectors = Collectors(workspace, dedup=dedup)
