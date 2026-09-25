@@ -18,8 +18,11 @@ load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env'))
 # Сколько символов текста поста уходит редактору как Context. 400 отрезало
 # суть длинных Telegram-постов: цифры (×194 быстрее, 4,2¢/M) стоят во втором-
 # третьем абзаце, и редактор видел только вводку «собрали коллекцию…».
-# Фетчер отдаёт до 1200 (TEXT_TRUNCATE); дедуп по-прежнему смотрит text[:300].
-CONTEXT_CHARS = 900
+# 900 отрезало цитату первоисточника в квот-твитах: у @omarsar0 про CLM
+# (1134 символа) анонс «Introducing Contrastive Language Model…» идёт после
+# «Jacky Kwok:» в самом конце. 1200 = лимит фетчера Telegram (TEXT_TRUNCATE);
+# дедуп по-прежнему смотрит text[:300].
+CONTEXT_CHARS = 1200
 
 
 class Collectors:
