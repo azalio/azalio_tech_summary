@@ -31,6 +31,11 @@ ssh "$SSH_TARGET" "cd $REMOTE_DIR && <cmd>"
 - **NEVER inspect the local `workspace/` or local `events.db`** — it is stale
   leftover state and does not reflect what the digest saw or posted. Answer every
   "why did the digest do X" question against the live DB on the server.
+- **Writes to the prod DBs** (`events.db`, `reddit_sent.db`) are blocked for the
+  agent by the auto-mode classifier. Back up the file first (`cp … .bak`), give
+  the user a one-line command to run (`! <cmd>`), then verify its effect
+  read-only. Re-evaluating a swallowed post = delete its `sent_posts` row AND fix
+  the cluster that absorbed it (see Dedup below).
 - Dedup DB: `$REMOTE_DIR/workspace/memory/semantic_dedup/events.db` (on server).
 - Last posted digest: `$REMOTE_DIR/workspace/memory/last_intel_summary.txt`.
 - **Historical post data**: `$REMOTE_DIR/workspace/memory/digest_runs.jsonl` —
@@ -49,8 +54,20 @@ ssh "$SSH_TARGET" "cd $REMOTE_DIR && <cmd>"
   the server and run there, never against `$REMOTE_DIR` directly:
   ```bash
   ssh "$SSH_TARGET" 'mkdir -p /tmp/dt'; scp -q *.py "$SSH_TARGET":/tmp/dt/
-  ssh "$SSH_TARGET" 'cd /tmp/dt && HF_HUB_OFFLINE=1 '"$REMOTE_DIR"'/.venv/bin/python -m pytest test_dedup.py -q'
+  ssh "$SSH_TARGET" 'cd /tmp/dt && HF_HUB_OFFLINE=1 '"$REMOTE_DIR"'/.venv/bin/python -m pytest -q'
   ```
+  `pytest -q` runs all six `test_*.py` files (~224 tests); `test_dedup.py`
+  alone is not the full gate.
+- **Replaying an editor decision** ("why did the digest drop/keep X"): rebuild
+  the exact prompt from that run's `digest_runs.jsonl` record —
+  `VIBE_PROMPT.format(...)` with the run's `intelligence` / `event_signals`, the
+  previous non-empty `summary` as `last_summary`, and `load_recent_published()`
+  over only the records *before* that run (`now=` the run's `ts`) — then feed it
+  to `codex exec --skip-git-repo-check -o out.txt -` in `/tmp` on the server. No
+  post, no DB writes. Run it detached (`nohup`) — a dropped SSH session kills
+  codex mid-call. For the reason, append a debug question after the prompt and
+  ask for a separate «РАЗБОР» section; replay 2+ times before calling a drop
+  deterministic.
 - **Deploy**: `make deploy` (scp source to `$SSH_TARGET:$REMOTE_DIR`). Also
   `make install-cron`, `make backup`. Commit/deploy direct to `main` is the repo
   convention (cron runs from `main`).
@@ -128,6 +145,15 @@ Passthrough: N` counts pass-throughs; `RETELLING passed to editor` lines in
   a posted story is not a new fact; a repeat needs ⬆️ and only new facts.
   Facts of an item must come from the candidate at its own link — never carried
   over from earlier issues.
+- **Attribution** (same prompt): who did what stays exactly as in the source —
+  in "we built X using @vendor's Y" the news is X by the poster, Y is only the
+  tech used; never turn a mentioned product into the "releaser" or change its
+  class (model ≠ runtime ≠ harness ≠ plugin). Facts of an item come only from
+  the candidate at its own link.
+- **Post context cap** (`CONTEXT_CHARS = 1200` in `collectors.py`, Telegram /
+  Reddit / X): the editor sees up to 1200 chars of a post. 400 cut the numbers
+  out of long TG posts; 900 cut the quoted primary source off quote-tweets
+  (it sits at the very end, after "Author:"). Dedup still embeds `text[:300]`.
 - **Voice** (same prompt): each item may carry one optional `↳ ` line after
   the link (≤15 words, a concrete *consequence* for the reader stated as a
   fact — never advice or an imperative like «попробуй»/«добавь»/«обнови»;
@@ -176,6 +202,29 @@ Passthrough: N` counts pass-throughs; `RETELLING passed to editor` lines in
   # gzipped rotations: zcat …/digest_runs.jsonl.1.gz | … eval_digest.py -
   ```
   Pure parsing (no E5/network) — also runnable locally on a copied JSONL.
+
+## Telegram sources
+
+- The channel list is **`TELEGRAM_CHANNELS` in the server's `.env`**
+  (comma-separated usernames, ~100) — not in git. Edit it on the server with a
+  backup (`cp .env .env.bak-<ts>`), append by regex on that one line, and
+  verify the line count after. No deploy needed; the next `:15` run picks it up.
+- The collector resolves channels **only by public @username**; channels
+  without one can't be added.
+- **Vet a candidate with the collector account itself**, read-only, on a
+  **copy** of `workspace/memory/telegram.session` (the fetcher holds the SQLite
+  lock during cron): `get_entity` → must be a broadcast `Channel`, not a group;
+  `GetFullChannelRequest` for subscribers; `iter_messages(limit=30)` for last
+  post date / posts per 7 days / headlines. Never join, never mark read.
+  `iter_dialogs()` on the same copy lists what the account already follows.
+- Selection rules: live (posts this month), on-topic (DevOps/SRE, K8s, AI
+  agents / coding agents, inference cost), not security-only (the digest drops
+  security anyway), not a mirror of an existing collector (Habr, HN), not
+  jobs / conference announcements / books / memes / general Linux.
+- A new batch spikes the editor input on its first run (Sep 2026: 46 → 88 KB);
+  it settles next hour. Check that the run still posts within the LLM timeout.
+- The collector account is also subscribed to hundreds of unrelated adult /
+  gambling / grey-market groups (mass-added); ignore them when listing dialogs.
 
 ## X / Twitter acquisition cascade (`x_acquire.py`)
 
