@@ -1072,6 +1072,18 @@ class TestRadarPrompt:
         # Запрет хвостов остался, но теперь про сам факт, а не про ↳ строку.
         assert "внутри самого буллета" in VIBE_PROMPT
 
+    def test_prompt_infostyle_why_line_and_bold(self):
+        """Проверка выпусков линтером infostyle (29.09): 88,5/100. ↳ строка
+        домысливала связи («устаревают за несколько кварталов» — дословно пример
+        выдуманной связки из скилла), жирный стоял в среднем 3,2 раза на пункт."""
+        from main import VIBE_PROMPT
+
+        assert "ЗАЧЕМ-СТРОКА — тоже факт, а не догадка" in VIBE_PROMPT
+        assert "за несколько кварталов" in VIBE_PROMPT
+        assert "Не повторяй одну схему строки" in VIBE_PROMPT
+        assert "ЖИРНЫЙ — только название продукта" in VIBE_PROMPT
+        assert "Ключевые термины, имена, цифры: **жирный**" not in VIBE_PROMPT
+
     def test_prompt_pins_attribution(self):
         """Выпуск 21.09 20:20: «TypeSafe выпустила Jev — среду выполнения…» при
         источнике «We built a new harness using @typesafeai's Jev». Упомянутая

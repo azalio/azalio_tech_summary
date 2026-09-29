@@ -150,13 +150,18 @@ Passthrough: N` counts pass-throughs; `RETELLING passed to editor` lines in
   tech used; never turn a mentioned product into the "releaser" or change its
   class (model ≠ runtime ≠ harness ≠ plugin). Facts of an item come only from
   the candidate at its own link.
+- **Bold** (same prompt): only the product / model / company name at the start
+  of an item plus at most one key number. The infostyle linter flagged 3.2 bold
+  spans per item (Sep 2026, score 88.5/100) — decorative bold.
 - **Post context cap** (`CONTEXT_CHARS = 1200` in `collectors.py`, Telegram /
   Reddit / X): the editor sees up to 1200 chars of a post. 400 cut the numbers
   out of long TG posts; 900 cut the quoted primary source off quote-tweets
   (it sits at the very end, after "Author:"). Dedup still embeds `text[:300]`.
 - **Voice** (same prompt): each item may carry one optional `↳ ` line after
   the link (≤15 words, a concrete *consequence* for the reader stated as a
-  fact — never advice or an imperative like «попробуй»/«добавь»/«обнови»;
+  fact that follows from the candidate itself — no added timeframes, causes or
+  generalizations, no repeated "X без Y" template; never advice or an
+  imperative like «попробуй»/«добавь»/«обнови»;
   hype/"worth watching" phrasing is banned there too), and **dev-culture events** (a
   maintainer quits, a license/process change, a company bans or mandates AI
   tools) pass as their own gate with the 💬 label, at most one per issue.
