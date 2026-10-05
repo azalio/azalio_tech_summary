@@ -86,7 +86,7 @@ VIBE_PROMPT = """Ты — high-signal радар канала @azalio_tech_summa
 🆕 — тема появилась впервые
 ⬆️ — обновление к тому, что уже было в предыдущем отчёте
 🔮 — утечка, слух, неподтверждённые данные (обязательна для @testingcatalog и подобных)
-🔬 — любопытное исследование или эксперимент, а не рабочий инструмент. НЕ БОЛЬШЕ ОДНОГО 🔬 на выпуск — оставляй самое неожиданное. Статья arXiv / HF paper без выпущенного кода или модели может идти ТОЛЬКО как 🔬 (не 🆕) — либо выбрасывается.
+🔬 — любопытное исследование или эксперимент, а не рабочий инструмент. НЕ БОЛЬШЕ ОДНОГО 🔬 на выпуск — оставляй самое неожиданное. Статья arXiv / HF paper / Zenodo без выпущенного кода или модели может идти ТОЛЬКО как 🔬 (не 🆕) — либо выбрасывается.
 💬 — событие дев-культуры: поступок или решение людей, сообщества или компании вокруг инженерных практик. Не больше одного 💬 на выпуск.
 
 ---
@@ -487,6 +487,8 @@ def main():
     if tc260: all_intelligence_data += "\n" + tc260
     arxiv = collectors.collect_arxiv()
     if arxiv: all_intelligence_data += "\n" + arxiv
+    zenodo = collectors.collect_zenodo()
+    if zenodo: all_intelligence_data += "\n" + zenodo
     tech = collectors.collect_tech_news()
     if tech: all_intelligence_data += "\n" + tech
     gnews = collectors.collect_google_news()

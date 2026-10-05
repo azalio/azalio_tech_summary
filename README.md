@@ -23,6 +23,7 @@ Output goes to ~30 buckets per day, ~5-15 bullets per digest after dedup.
 - **HackerNews** — front page via Algolia.
 - **Tech press (RSS)** — TechCrunch, Ars Technica, The Verge, Wired, MIT Tech Review, IEEE Spectrum, The Register.
 - **AI research** — HuggingFace Daily Papers (upvotes ≥ 100), ArXiv RSS (cs.AI, cs.LG, cs.CL).
+- **Zenodo** — public records API, filtered to DevOps/SRE, coding agents, and LLM inference. Deposits from the last 7 days, latest versions only; up to 3 pages and 8 new candidates per run. No token required. Papers without released code/models remain research, not tool announcements.
 - **Infra/DevOps** — Kubernetes, CNCF, AWS, Cloudflare, HashiCorp, Datadog, Grafana.
 - **Science/Space** — NASA, Nature, ScienceDaily, SpaceNews, ESO, ESA, Chandra X-ray, Phys.org.
 - **Global news** — BBC, Al Jazeera, DW.

@@ -796,6 +796,135 @@ class Collectors:
             return True
         return bool(self._WATCHA_RELEVANT_RE.search(f"{title or ''} {body or ''}"))
 
+    _ZENODO_TERMS = (
+        'kubernetes OR k8s OR devops OR "site reliability" OR '
+        '"infrastructure as code" OR "coding agent" OR "coding agents" OR '
+        '"code agent" OR "LLM inference" OR "model serving" OR '
+        'vllm OR "llama.cpp" OR opentelemetry OR prometheus OR grafana OR '
+        '(observability AND (cloud OR software OR telemetry OR sre))'
+    )
+    _ZENODO_TOPIC_RE = re.compile(
+        r'\b(?:kubernetes|k8s|devops|site reliability(?: engineering)?|'
+        r'infrastructure as code|(?:coding|code) agents?|llm inference|'
+        r'model serving|vllm|llama\.cpp|opentelemetry|prometheus|grafana)\b',
+        re.IGNORECASE,
+    )
+
+    @staticmethod
+    def _zenodo_is_relevant(title, keywords):
+        """Precision gate on title/keywords, not incidental abstract mentions."""
+        text = " ".join([title] + keywords)
+        if Collectors._ZENODO_TOPIC_RE.search(text):
+            return True
+        return bool(
+            re.search(r'\bobservability\b', text, re.IGNORECASE)
+            and re.search(r'\b(?:cloud|software|telemetry|sre)\b', text, re.IGNORECASE)
+        )
+
+    def collect_zenodo(self):
+        """Recent thematic Zenodo deposits; bounded anonymous API, no PDF fetches."""
+        from bs4 import BeautifulSoup
+
+        print("Fetching Zenodo...")
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=7)).date().isoformat()
+        terms = self._ZENODO_TERMS
+        query = (f'(metadata.title:({terms}) OR metadata.keywords:({terms})) '
+                 f'AND created:[{cutoff} TO *]')
+        lines = []
+        filtered = 0
+        pages = 0
+        for page in range(1, 4):
+            try:
+                resp = requests.get(
+                    "https://zenodo.org/api/records",
+                    params={"q": query, "sort": "mostrecent", "size": 25,
+                            "page": page, "all_versions": "false"},
+                    timeout=15,
+                )
+                resp.raise_for_status()
+                payload = resp.json()
+                items = payload["hits"]["hits"]
+                if not isinstance(items, list):
+                    raise ValueError("invalid records list")
+            except (requests.RequestException, ValueError, TypeError, KeyError) as e:
+                print(f"  Zenodo page {page} error: {e}")
+                break
+            pages += 1
+            for item in items:
+                if not isinstance(item, dict):
+                    filtered += 1
+                    continue
+                meta = item.get("metadata")
+                if not isinstance(meta, dict):
+                    filtered += 1
+                    continue
+                title = meta.get("title")
+                rid = str(item.get("id") or "")
+                kind = meta.get("resource_type")
+                keywords = meta.get("keywords") or []
+                if not isinstance(keywords, list):
+                    keywords = []
+                keywords = [word for word in keywords if isinstance(word, str)]
+                if not isinstance(kind, dict):
+                    filtered += 1
+                    continue
+                allowed = (
+                    kind.get("type") in ("software", "dataset")
+                    or (kind.get("type") == "publication" and kind.get("subtype") in (
+                        "article", "preprint", "conferencepaper", "workingpaper", "report",
+                    ))
+                )
+                if (not isinstance(title, str) or not title.strip()
+                        or not rid.isascii() or not rid.isdecimal()
+                        or not allowed or not self._is_recent(item.get("created"), days=7)
+                        or not self._zenodo_is_relevant(title, keywords)):
+                    filtered += 1
+                    continue
+                title = re.sub(r'\s+', ' ', title).strip()
+                url = f"https://zenodo.org/records/{rid}"
+                if self._is_seen(url):
+                    continue
+                raw_desc = meta.get("description")
+                soup = BeautifulSoup(raw_desc if isinstance(raw_desc, str) else "", "html.parser")
+                for tag in soup(["script", "style"]):
+                    tag.decompose()
+                desc = re.sub(r'\s+', ' ', soup.get_text(" ", strip=True)).strip()[:CONTEXT_CHARS]
+                self._mark_seen(url, "Zenodo")
+                if self._is_semantic_dup(title, "Zenodo", url, desc[:300]):
+                    continue
+                # Related URLs are evidence from this record, not a readiness claim.
+                related = meta.get("related_identifiers") or []
+                code_links = []
+                if isinstance(related, list):
+                    for relation in related:
+                        if not isinstance(relation, dict):
+                            continue
+                        link = relation.get("identifier")
+                        if not isinstance(link, str) or not link.startswith("https://"):
+                            continue
+                        try:
+                            host = urlparse(link).hostname
+                        except ValueError:
+                            continue
+                        if host in {"github.com", "gitlab.com", "huggingface.co"}:
+                            code_links.append(link)
+                label = kind.get("subtype") or kind["type"]
+                context = f"Type: {label}; keywords: {', '.join(keywords)[:300]}"
+                if code_links:
+                    context += f"; related code/model URLs: {', '.join(code_links[:3])}"
+                lines.append(f"- {title} ({context}) - {desc} - Link: {url}")
+                self._add_candidate(
+                    "Zenodo", "Zenodo", title, url,
+                    line=f"- {title} - Link: {url}",
+                    freshness=self._freshness_from_iso(item.get("created"), 7),
+                )
+                if len(lines) >= 8:
+                    break
+            if len(lines) >= 8 or len(items) < 25:
+                break
+        print(f"  Zenodo: kept {len(lines)}, filtered {filtered}, pages {pages}")
+        return "ZENODO (thematic research/software/data):\n" + "\n".join(lines) if lines else ""
+
     def collect_watcha(self):
         """Watcha (观猹 / watcha.cn) — a Chinese "Product Hunt for AI": new
         AI-product launches + hot community posts. Public JSON API (no auth) at

@@ -60,6 +60,7 @@ SOURCE_WEIGHTS = {
     "GLOBAL NEWS": 1.0,
     "SCIENCE & SPACE": 1.0,
     "ARXIV AI/ML PAPERS": 0.9,
+    "Zenodo": 0.9,
     "ARXIV ASTROPHYSICS": 0.8,
     "Telegram": 1.0,
     # X/Twitter via the free acquisition cascade. Curated handles, but an
