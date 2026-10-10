@@ -497,6 +497,10 @@ def main():
     if science: all_intelligence_data += "\n" + science
     infra = collectors.collect_infra_news()
     if infra: all_intelligence_data += "\n" + infra
+    tailscale = collectors.collect_tailscale()
+    if tailscale: all_intelligence_data += "\n" + tailscale
+    official_releases = collectors.collect_official_releases()
+    if official_releases: all_intelligence_data += "\n" + official_releases
     ai_labs = collectors.collect_ai_labs()
     if ai_labs: all_intelligence_data += "\n" + ai_labs
     eng_curated = collectors.collect_eng_curated()

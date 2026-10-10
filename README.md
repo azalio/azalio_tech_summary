@@ -32,6 +32,8 @@ Output goes to ~30 buckets per day, ~5-15 bullets per digest after dedup.
 - **Finnhub** — general financial news (optional, needs API key).
 - **Habr** — top daily articles (score ≥ 100).
 - **Claude Platform release notes** — direct `.md` fetch from `platform.claude.com`.
+- **Official product releases** — GitHub Atom feeds for Claude Code (`anthropics/claude-code`), Codex CLI (`openai/codex`), and SGLang (`sgl-project/sglang`), without GitHub API calls. Exact stable tag formats (`vN.N.N`, Codex: `rust-vN.N.N`) only; alpha/RC/nightly tags are excluded. This whitelist depends on each project's tag convention, not an Atom prerelease flag. Updated within 14 days, newest first, up to 2 new releases per product; cleaned release notes capped at 6,000 characters with a truncation marker. The editor still filters routine/version-only changes.
+- **Tailscale** — official blog RSS (`https://tailscale.com/blog/index.xml`), up to 3 new posts from the last 7 days, separate from the general infrastructure feed budget.
 - **GitHub Trending** — top 5 daily by stars-today (≥ 200), with first ~400 chars of README via `raw.githubusercontent.com`.
 
 ## Architecture

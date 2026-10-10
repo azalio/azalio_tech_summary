@@ -377,6 +377,105 @@ class Collectors:
                 print(f"  RSS error {name}: {e}")
         return content if count > 0 else ""
 
+    def collect_official_releases(self):
+        """Stable product releases with notes, using public Atom feeds only."""
+        from bs4 import BeautifulSoup
+
+        print("Fetching official releases...")
+        products = (
+            ("Claude Code", "anthropics/claude-code", r"v\d+\.\d+\.\d+"),
+            ("Codex CLI", "openai/codex", r"rust-v\d+\.\d+\.\d+"),
+            ("SGLang", "sgl-project/sglang", r"v\d+\.\d+\.\d+"),
+        )
+        now = datetime.now(timezone.utc)
+        content = "OFFICIAL RELEASES:\n"
+        content += ("Stable releases are not automatically news: keep concrete capability, "
+                    "reliability, cost or compatibility changes; skip version-only updates "
+                    "and routine fixes.\n")
+        count = 0
+        for product, repo, tag_pattern in products:
+            try:
+                response = requests.get(
+                    f"https://github.com/{repo}/releases.atom",
+                    headers={"User-Agent": "Mozilla/5.0 vibe-intel/1.0"},
+                    timeout=15,
+                )
+                response.raise_for_status()
+                feed = feedparser.parse(response.content)
+                if feed.get("bozo"):
+                    print(f"  Official releases parse error {product}: malformed Atom")
+                releases = []
+                for entry in feed.entries:
+                    try:
+                        link = entry.get("link")
+                        if not isinstance(link, str):
+                            continue
+                        parsed = urlparse(link)
+                        prefix = f"/{repo}/releases/tag/"
+                        if (parsed.scheme != "https" or parsed.netloc != "github.com"
+                                or parsed.query or parsed.fragment or parsed.params
+                                or not parsed.path.startswith(prefix)):
+                            continue
+                        tag = parsed.path[len(prefix):]
+                        if not re.fullmatch(tag_pattern, tag):
+                            continue
+                        updated = datetime.fromisoformat(
+                            str(entry.get("updated") or "").replace("Z", "+00:00")
+                        )
+                        if updated.tzinfo is None:
+                            updated = updated.replace(tzinfo=timezone.utc)
+                        if not now - timedelta(days=14) <= updated <= now:
+                            continue
+                        html = entry.get("summary")
+                        if not html:
+                            parts = entry.get("content")
+                            html = " ".join(str(part.get("value") or "")
+                                            for part in parts if isinstance(part, dict)) if isinstance(parts, list) else ""
+                        if not isinstance(html, str):
+                            continue
+                        soup = BeautifulSoup(html, "html.parser")
+                        for node in soup(["script", "style"]):
+                            node.decompose()
+                        notes = re.sub(r"\s+", " ", soup.get_text(" ", strip=True)).strip()
+                        if not notes:
+                            continue
+                        releases.append((updated, tag, link, notes))
+                    except (ValueError, TypeError, AttributeError):
+                        print(f"  Official releases entry error {product}: malformed record")
+                        continue
+                per_product = 0
+                for updated, tag, link, notes in sorted(releases, key=lambda row: row[0], reverse=True):
+                    if self._is_seen(link):
+                        continue
+                    source = f"OFFICIAL RELEASES:{product}"
+                    self._mark_seen(link, source)
+                    title = f"{product} {tag}"
+                    if self._is_semantic_dup(title, source, link, notes[:300]):
+                        continue
+                    line = f"[{product}] {title} - Link: {link}\n"
+                    content += line + f"  {notes[:6000]}"
+                    if len(notes) > 6000:
+                        content += " [release notes truncated]"
+                    content += "\n"
+                    self._add_candidate(
+                        "OFFICIAL RELEASES", product, title, link, line=line.strip(),
+                        freshness=self._freshness_from_iso(updated.isoformat(), 14),
+                    )
+                    count += 1
+                    per_product += 1
+                    if per_product >= 2:
+                        break
+                print(f"  Official releases {product}: {per_product} new items")
+            except Exception as e:
+                print(f"  Official releases error {product}: {e}")
+        return content if count else ""
+
+    def collect_tailscale(self):
+        return self._fetch_rss(
+            {"Tailscale": "https://tailscale.com/blog/index.xml"}, "TAILSCALE",
+            max_per_feed=3, max_total=3,
+        )
+
     # ── Existing collectors ──────────────────────────────────────
 
     def collect_reddit(self):
@@ -738,14 +837,12 @@ class Collectors:
         return self._fetch_rss(feeds, "TECH NEWS", max_per_feed=5, max_total=20)
 
     def collect_china_news(self):
-        """Chinese English-language outlets: CGTN, China Daily, SCMP, Global Times."""
+        """Chinese English-language outlets: CGTN, SCMP, Global Times."""
         print("Fetching China News RSS...")
         feeds = {
             "CGTN World": "https://www.cgtn.com/subscribe/rss/section/world.xml",
             "CGTN China": "https://www.cgtn.com/subscribe/rss/section/china.xml",
             "CGTN Business": "https://www.cgtn.com/subscribe/rss/section/business.xml",
-            "China Daily World": "https://www.chinadaily.com.cn/rss/world_rss.xml",
-            "China Daily China": "https://www.chinadaily.com.cn/rss/china_rss.xml",
             "SCMP": "https://www.scmp.com/rss/91/feed/",
             "Global Times": "https://www.globaltimes.cn/rss/outbrain.xml",
         }

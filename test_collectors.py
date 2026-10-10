@@ -157,6 +157,25 @@ def test_freshness_from_iso_old_is_clamped_zero():
     assert Collectors._freshness_from_iso(old, max_age_days=21) == 0.0
 
 
+def test_china_news_excludes_dead_china_daily_feeds(monkeypatch):
+    collector = object.__new__(Collectors)
+    captured = {}
+
+    def fetch(feeds, section, **kwargs):
+        captured.update(feeds=feeds, section=section, **kwargs)
+        return "news"
+
+    monkeypatch.setattr(collector, "_fetch_rss", fetch)
+    assert collector.collect_china_news() == "news"
+    assert set(captured["feeds"]) == {
+        "CGTN World", "CGTN China", "CGTN Business", "SCMP", "Global Times",
+    }
+    assert not any("chinadaily.com.cn" in url for url in captured["feeds"].values())
+    assert captured["section"] == "CHINA NEWS"
+    assert captured["max_per_feed"] == 3
+    assert captured["max_total"] == 12
+
+
 def test_freshness_from_iso_missing_is_neutral():
     assert Collectors._freshness_from_iso("", max_age_days=21) == 0.5
     assert Collectors._freshness_from_iso("not-a-date", max_age_days=21) == 0.5
