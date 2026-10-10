@@ -54,12 +54,15 @@ SOURCE_WEIGHTS = {
     "ENGINEERING CURATED": 1.2,
     "Reddit": 1.1,
     "ClaudePlatform": 1.2,
+    "OFFICIAL RELEASES": 1.1,
+    "TAILSCALE": 1.0,
     "NVD": 1.2,
     # Standard newswire / RSS
     "TECH NEWS": 1.0,
     "GLOBAL NEWS": 1.0,
     "SCIENCE & SPACE": 1.0,
     "ARXIV AI/ML PAPERS": 0.9,
+    "Zenodo": 0.9,
     "ARXIV ASTROPHYSICS": 0.8,
     "Telegram": 1.0,
     # X/Twitter via the free acquisition cascade. Curated handles, but an
